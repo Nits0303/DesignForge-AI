@@ -1,0 +1,406 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuthProvider {
+  email
+  google
+}
+
+enum BrandAssetCategory {
+  logo
+  product
+  team
+  background
+  other
+}
+
+enum DesignStatus {
+  generating
+  preview
+  approved
+  exported
+  archived
+}
+
+enum BatchJobStatus {
+  pending
+  processing
+  completed
+  failed
+  partial
+}
+
+enum ExportFormat {
+  png
+  jpg
+  pdf
+  figma_bridge
+  figma_plugin
+  html_css
+  zip
+}
+
+enum ExportJobStatus {
+  pending
+  processing
+  complete
+  failed
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  passwordHash String?
+  name         String?
+  avatarUrl    String?
+  authProvider AuthProvider  @default(email)
+  googleId     String?       @unique
+  isAdmin      Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  lastLoginAt  DateTime?
+
+  sessions     Session[]
+  accounts     Account[]
+  brands       BrandProfile[]
+  designs      Design[]
+  projects     Project[]
+  generationLogs GenerationLog[]
+  preferences  UserPreference[]
+  revisionPatterns RevisionPattern[]
+  batchJobs    BatchJob[]
+  referenceImages ReferenceImage[]
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  sessionToken String   @unique
+  expires      DateTime
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model BrandProfile {
+  id             String       @id @default(cuid())
+  userId         String
+  name           String
+  logoPrimaryUrl String?
+  logoIconUrl    String?
+  logoDarkUrl    String?
+  colors         Json?
+  typography     Json?
+  toneVoice      String?
+  industry       String?
+  socialHandles  Json?
+  isDefault      Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  assets         BrandAsset[]
+  designs        Design[]
+  generationLogs GenerationLog[]
+  batchJobs      BatchJob[]
+}
+
+model BrandAsset {
+  id        String              @id @default(cuid())
+  brandId   String
+  fileUrl   String
+  fileName  String
+  fileType  String
+  category  BrandAssetCategory
+  metadata  Json?
+  createdAt DateTime            @default(now())
+
+  brand     BrandProfile        @relation(fields: [brandId], references: [id], onDelete: Cascade)
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  userId      String
+  name        String
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  designs     Design[]
+}
+
+model Design {
+  id             String        @id @default(cuid())
+  userId         String
+  brandId        String?
+  projectId      String?
+  title          String
+  originalPrompt String
+  parsedIntent   Json?
+  platform       String
+  format         String
+  dimensions     Json?
+  currentVersion Int           @default(1)
+  status         DesignStatus  @default(generating)
+  tags           String[]
+  shareToken     String?       @unique
+  shareExpiry    DateTime?
+  referenceIds   String[]      @default([])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brand          BrandProfile? @relation(fields: [brandId], references: [id])
+  project        Project?      @relation(fields: [projectId], references: [id])
+  versions       DesignVersion[]
+  assets         DesignAsset[]
+  generationLogs GenerationLog[]
+  exports        Export[]
+  shareLinks     ShareLink[]
+  exportJobs     ExportJob[]
+
+  @@index([userId, createdAt])
+  @@index([userId, platform])
+}
+
+model ReferenceImage {
+  id               String   @id @default(cuid())
+  userId           String
+  originalFilename String
+  visionUrl        String
+  thumbnailUrl     String
+  analysisJson     Json?
+  name             String?
+  tags             String[] @default([])
+  isSaved          Boolean  @default(false)
+  contentRejected  Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+model DesignVersion {
+  id               String   @id @default(cuid())
+  designId         String
+  versionNumber    Int
+  htmlContent      String
+  revisionPrompt   String?
+  aiModelUsed      String?
+  promptTokens     Int?
+  completionTokens Int?
+  generationTimeMs Int?
+  cachedTokens     Int?
+  createdAt        DateTime @default(now())
+
+  design           Design   @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+  @@unique([designId, versionNumber])
+}
+
+model DesignAsset {
+  id            String   @id @default(cuid())
+  designId      String
+  versionNumber Int
+  assetType     String
+  fileUrl       String
+  sourceApi     String?
+  generationPrompt String?
+  costUsd       Float?
+  createdAt     DateTime @default(now())
+
+  design        Design   @relation(fields: [designId], references: [id], onDelete: Cascade)
+}
+
+model Template {
+  id              String   @id @default(cuid())
+  name            String
+  tier            String
+  category        String
+  platform        String
+  htmlSnippet     String
+  previewUrl      String?
+  tags            String[]
+  source          String?
+  usageCount      Int      @default(0)
+  avgApprovalRate Float?   @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([platform, category, isActive])
+}
+
+model DesignPattern {
+  id             String   @id @default(cuid())
+  name           String
+  platform       String
+  description    String
+  industryTags   String[]
+  sectionOrder   Json?
+  styleGuidelines Json?
+  createdAt      DateTime @default(now())
+}
+
+model GenerationLog {
+  id                String   @id @default(cuid())
+  designId          String?
+  userId            String?
+  fullPromptHash    String
+  systemPromptVersion String
+  templateIdsUsed   String[]
+  brandId           String?
+  model             String
+  totalTokens       Int?
+  costUsd           Float?
+  // Section generation analytics (for website/dashboard multi-section streaming).
+  sectionCount      Int?
+  sectionPlan       Json?
+  sectionFailures   Json?
+  generationStrategy String?
+  parallelBatches  Int?
+  revisionCount     Int      @default(0)
+  wasApproved       Boolean?
+  sessionDurationMs Int?
+  createdAt         DateTime @default(now())
+
+  design            Design?       @relation(fields: [designId], references: [id])
+  user              User?         @relation(fields: [userId], references: [id])
+  brand             BrandProfile? @relation(fields: [brandId], references: [id])
+
+  @@index([userId, createdAt])
+}
+
+model UserPreference {
+  id             String   @id @default(cuid())
+  userId         String
+  preferenceKey  String
+  preferenceValue Json
+  confidence     Float?   @default(0)
+  sampleCount    Int      @default(0)
+  updatedAt      DateTime @updatedAt
+
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, preferenceKey])
+}
+
+model RevisionPattern {
+  id           String   @id @default(cuid())
+  userId       String
+  patternType  String
+  patternDetail Json
+  frequency    Int      @default(0)
+  lastSeenAt   DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PromptScore {
+  id                String   @id @default(cuid())
+  promptStructureHash String
+  platform          String
+  format            String
+  score             Float    @default(0)
+  totalUses         Int      @default(0)
+  zeroRevisionRate  Float?   @default(0)
+  avgRevisions      Float?   @default(0)
+  updatedAt         DateTime @updatedAt
+
+  @@index([platform, format])
+}
+
+model BatchJob {
+  id            String          @id @default(cuid())
+  userId        String
+  brandId       String?
+  status        BatchJobStatus  @default(pending)
+  totalItems    Int
+  completedItems Int            @default(0)
+  inputData     Json
+  createdAt     DateTime        @default(now())
+  completedAt   DateTime?
+
+  user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brand         BrandProfile?   @relation(fields: [brandId], references: [id])
+}
+
+model Export {
+  id            String       @id @default(cuid())
+  designId      String
+  versionNumber Int
+  format        ExportFormat
+  fileUrl       String
+  figmaUrl      String?
+  fileSizeBytes Int?
+  createdAt     DateTime     @default(now())
+
+  design        Design       @relation(fields: [designId], references: [id], onDelete: Cascade)
+}
+
+model ShareLink {
+  id           String   @id @default(cuid())
+  token        String   @unique
+  designId     String
+  versionNumber Int
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  design       Design   @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+  @@index([designId, createdAt])
+}
+
+model ExportJob {
+  id            String          @id @default(cuid())
+  designId      String
+  versionNumber Int
+  format        String
+  status        ExportJobStatus @default(pending)
+  resultUrl     String?
+  errorMessage  String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  design        Design          @relation(fields: [designId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+}
+

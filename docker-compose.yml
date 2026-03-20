@@ -1,0 +1,123 @@
+services:
+  app:
+    image: node:22-alpine
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - PUPPETEER_SERVICE_URL=http://puppeteer:3000
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - designforge-network
+
+  db:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: designforge
+      POSTGRES_USER: designforge_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-designforge_password}
+    volumes:
+      - designforge-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - designforge-network
+
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server --appendonly no
+      --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - designforge-network
+
+  puppeteer:
+    build:
+      context: ./services/puppeteer
+      dockerfile: Dockerfile
+    command: npm start
+    environment:
+      - PORT=3000
+    networks:
+      - designforge-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://localhost:3000/health',res=>process.exit(res.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  export-worker:
+    image: node:22-alpine
+    command: sh -c "npx ts-node src/scripts/exportWorker.ts"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - PUPPETEER_SERVICE_URL=http://puppeteer:3000
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      redis:
+        condition: service_healthy
+      puppeteer:
+        condition: service_healthy
+    networks:
+      - designforge-network
+
+  cron:
+    image: node:22-alpine
+    command: sh -c "npx ts-node src/scripts/exportCleanupCron.ts"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - PUPPETEER_SERVICE_URL=http://puppeteer:3000
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - designforge-network
+
+networks:
+  designforge-network:
+    driver: bridge
+
+volumes:
+  designforge-postgres-data:
+    driver: local
+

@@ -1,3 +1,14 @@
+.next
+node_modules
+.env.local
+.env*
+dist
+coverage
+storage
+*.log
+npm-debug.log*
+yarn-error.log*
+
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
 # dependencies
