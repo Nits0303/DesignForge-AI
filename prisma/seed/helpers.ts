@@ -32,13 +32,13 @@ export async function upsertTemplate(data: SeedTemplateInput) {
       id,
       tags,
       avgApprovalRate: data.avgApprovalRate ?? 0.5,
-    },
+    } as any,
     create: {
       ...data,
       id,
       tags,
       avgApprovalRate: data.avgApprovalRate ?? 0.5,
-    },
+    } as any,
   });
 }
 

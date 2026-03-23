@@ -1,10 +1,14 @@
-import type { ParsedIntent, PromptMetadata } from "@/types/ai";
+import type { ParsedIntent, PromptMetadata, MobileScreenDescriptor } from "@/types/ai";
 import { PROMPTS } from "@/lib/ai/prompts";
 import { brandProfileToXml } from "@/lib/ai/brandSerializer";
 import { prisma } from "@/lib/db/prisma";
 import { PLATFORM_SPECS } from "@/constants/platforms";
 import type { ReferenceAnalysis } from "@/types/ai";
 import { redis } from "@/lib/redis/client";
+import { preferenceSerializer } from "@/lib/learning/preferenceSerializer";
+import { buildMobileContextXml, buildMobileScreenFlowXml } from "@/lib/ai/mobilePromptBlocks";
+import { resolvePromptVersionForGeneration } from "@/lib/ai/prompts/promptVersionRegistry";
+import type { MergedAbPromptContext } from "@/lib/ab/abTestAssignment";
 
 type AssembleParams = {
   userId: string;
@@ -18,6 +22,17 @@ type AssembleParams = {
     role?: "layout" | "style" | "color";
     analysis: ReferenceAnalysis;
   }[];
+  systemPromptVersionOverride?: string;
+  /** Final resolved system prompt version key (DB default + A/B overrides). */
+  resolvedSystemVersionKey?: string;
+  abVariantContext?: MergedAbPromptContext;
+  /** Per-screen flow generation (mobile multi-screen). */
+  mobileGenerationContext?: {
+    screenIndex: number;
+    totalScreens: number;
+    screenDescriptor?: MobileScreenDescriptor;
+    previousScreensXml?: string;
+  };
 };
 
 function confidenceLabel(a: ReferenceAnalysis) {
@@ -63,6 +78,10 @@ export async function assembleGenerationPrompt({
   userPrompt,
   referenceImageUrl,
   referenceAnalyses,
+  systemPromptVersionOverride,
+  resolvedSystemVersionKey,
+  abVariantContext,
+  mobileGenerationContext,
 }: AssembleParams): Promise<{
   system: string;
   messages: { role: "user"; content: { type: "text"; text: string }[] }[];
@@ -72,7 +91,14 @@ export async function assembleGenerationPrompt({
     where: { id: brandId, userId },
   });
 
-  const brandXml = brand ? brandProfileToXml(brand as any) : "";
+  const brandXmlFull = brand ? brandProfileToXml(brand as any) : "";
+  let brandXml = brandXmlFull;
+  if (abVariantContext?.brandContextLevel === "none") {
+    brandXml = "";
+  } else if (abVariantContext?.brandContextLevel === "colors_only" && brand) {
+    const colors = brand.colors as Record<string, string> | null | undefined;
+    brandXml = `<brand_colors_only>${JSON.stringify(colors ?? {})}</brand_colors_only>`;
+  }
 
   const spec = PLATFORM_SPECS[intent.platform];
   const dims = Array.isArray(intent.dimensions) ? intent.dimensions[0]! : intent.dimensions;
@@ -92,8 +118,34 @@ export async function assembleGenerationPrompt({
   if (brandXml) {
     textParts.push(`BRAND PROFILE XML:\n${brandXml}`);
   }
+
+  if (intent.platform === "mobile") {
+    const colors = brand?.colors as Record<string, string> | null | undefined;
+    const primary = colors?.primary ?? colors?.accent;
+    textParts.push(buildMobileContextXml(intent, primary));
+  }
+
   if (templates.length) {
     textParts.push(`COMPONENT LIBRARY:\n${componentLines}`);
+  }
+
+  // Learned user preferences (cached to avoid rebuilding XML every request).
+  const prefCacheKey = `preferences:user:${userId}:prompt_block`;
+  let preferencesXml = await redis.get(prefCacheKey);
+  if (!preferencesXml) {
+    const prefs = await prisma.userPreference.findMany({
+      where: { userId, confidence: { gt: 0.6 } },
+      select: { preferenceKey: true, preferenceValue: true, confidence: true, manualOverride: true },
+      orderBy: { updatedAt: "desc" },
+    });
+    preferencesXml = preferenceSerializer(prefs as any);
+    if (preferencesXml) {
+      // TTL: slightly longer than the nightly batch cycle (25 hours).
+      await redis.set(prefCacheKey, preferencesXml, "EX", 25 * 60 * 60);
+    }
+  }
+  if (preferencesXml) {
+    textParts.push(preferencesXml);
   }
 
   if (referenceAnalyses && referenceAnalyses.length > 0) {
@@ -124,7 +176,23 @@ export async function assembleGenerationPrompt({
     );
   }
 
-  textParts.push(`USER PROMPT:\n${userPrompt}`);
+  if (mobileGenerationContext) {
+    textParts.push(
+      buildMobileScreenFlowXml({
+        screenIndex: mobileGenerationContext.screenIndex,
+        totalScreens: mobileGenerationContext.totalScreens,
+        descriptor: mobileGenerationContext.screenDescriptor,
+        previousScreensXml: mobileGenerationContext.previousScreensXml,
+      })
+    );
+  }
+
+  const userPromptFinal =
+    abVariantContext?.additionalInstruction && String(abVariantContext.additionalInstruction).trim()
+      ? `${userPrompt}\n\n[A/B test variant note]\n${abVariantContext.additionalInstruction.trim()}`
+      : userPrompt;
+
+  textParts.push(`USER PROMPT:\n${userPromptFinal}`);
 
   if (referenceImageUrl) {
     textParts.push(
@@ -134,15 +202,17 @@ export async function assembleGenerationPrompt({
 
   const userContent = textParts.join("\n\n---\n\n");
 
-  const system = PROMPTS.generation.system;
+  const systemPromptVersion =
+    resolvedSystemVersionKey ?? systemPromptVersionOverride ?? PROMPTS.generation.version;
+  const system = (await resolvePromptVersionForGeneration(systemPromptVersion)).content;
 
   const metadata: PromptMetadata = {
-    systemVersion: PROMPTS.generation.version,
+    systemVersion: systemPromptVersion,
     estimatedTokens: {
       system: Math.round(system.length / 4),
       components: Math.round(componentLines.length / 4),
       brand: Math.round(brandXml.length / 4),
-      preferences: 0,
+      preferences: preferencesXml ? Math.round(String(preferencesXml).length / 4) : 0,
       request: Math.round(userContent.length / 4),
     },
     templateIds: templates.map((t) => t.id),

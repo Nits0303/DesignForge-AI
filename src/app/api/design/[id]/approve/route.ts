@@ -26,6 +26,13 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
       data: { status: "approved" },
     });
 
+    // Learning engine data: mark generation attempts for this design as approved.
+    // A design approved via the Approve button should be treated as zero-revision/first-try success.
+    await prisma.generationLog.updateMany({
+      where: { designId },
+      data: { wasApproved: true },
+    });
+
     // async: update template approval rates
     setTimeout(async () => {
       try {

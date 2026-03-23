@@ -4,6 +4,7 @@ import { fail, ok } from "@/lib/api/response";
 import { getRequiredSession } from "@/lib/auth/session";
 import { checkRateLimit } from "@/lib/redis/rateLimiter";
 import { parseSlidesFromHtml } from "@/lib/preview/slideParser";
+import { parseMobileScreens } from "@/lib/mobile/parseMobileVersionHtml";
 import { exportImageDesign } from "@/lib/export/imageExporter";
 import { enqueueExportJob } from "@/lib/export/enqueueExportJob";
 
@@ -84,8 +85,14 @@ export async function POST(req: Request) {
   });
   if (!version) return fail("NOT_FOUND", "Design version not found", 404);
 
-  const parsedSlides = parseSlidesFromHtml(version.htmlContent);
-  const slideCount = parsedSlides.type === "single" ? 1 : Math.max(parsedSlides.slides.length, 2);
+  const mobileScreens = parseMobileScreens(version.htmlContent);
+  const slideCount =
+    mobileScreens && mobileScreens.length > 0
+      ? mobileScreens.length
+      : (() => {
+          const parsedSlides = parseSlidesFromHtml(version.htmlContent);
+          return parsedSlides.type === "single" ? 1 : Math.max(parsedSlides.slides.length, 2);
+        })();
 
   const expectedFormat = format as unknown as ExportFormat;
   const basePath = `exports/${designId}/${targetVersion}`;
@@ -98,6 +105,10 @@ export async function POST(req: Request) {
       quality: quality ?? 90,
       exportSectionsIndividually: true,
     });
+
+    // User-initiated exports count as implicit approvals for learning signals.
+    await prisma.generationLog.updateMany({ where: { designId }, data: { wasApproved: true } });
+
     return ok({
       fileUrls: out.fileUrls,
       zipUrl: out.zipUrl,
@@ -162,6 +173,9 @@ export async function POST(req: Request) {
       413
     );
   }
+
+  // User-initiated exports count as implicit approvals for learning signals.
+  await prisma.generationLog.updateMany({ where: { designId }, data: { wasApproved: true } });
 
   return ok({
     fileUrls: out.fileUrls,

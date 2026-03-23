@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
 import { useForm } from "react-hook-form";
@@ -20,11 +20,12 @@ const schema = z.object({
 
 type FormValues = z.infer<typeof schema>;
 
-export default function LoginPage() {
+function LoginPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get("callbackUrl") ?? "/";
   const oauthError = searchParams.get("error") === "oauth_failed";
+  const oauthErrorCode = searchParams.get("error");
 
   const {
     register,
@@ -72,6 +73,12 @@ export default function LoginPage() {
         </div>
       )}
 
+      {oauthErrorCode && oauthErrorCode !== "oauth_failed" && (
+        <div className="mb-4 rounded-[var(--radius)] border border-[hsl(var(--destructive))] bg-[hsl(var(--destructive))]/10 px-3 py-2 text-xs text-[hsl(var(--destructive))]">
+          Google sign-in failed: <span className="font-mono">{oauthErrorCode}</span>
+        </div>
+      )}
+
       {formError && (
         <div className="mb-4 rounded-[var(--radius)] border border-[hsl(var(--destructive))] bg-[hsl(var(--destructive))]/10 px-3 py-2 text-xs text-[hsl(var(--destructive))]">
           {formError}
@@ -97,7 +104,7 @@ export default function LoginPage() {
               Password
             </span>
             <a
-              href="#"
+              href="/forgot-password"
               className="font-semibold text-[hsl(var(--accent))] text-xs"
             >
               Forgot password?
@@ -120,6 +127,14 @@ export default function LoginPage() {
         <GoogleAuthButton label="Sign in with Google" />
       </form>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginPageInner />
+    </Suspense>
   );
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import {
@@ -13,12 +13,19 @@ import {
   Palette,
   Rows3,
   Settings,
+  Bell,
   Sparkles,
+  Store,
+  UsersRound,
+  BookOpen,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { Button } from "@/components/ui/button";
 import { BrandSwitcher } from "@/components/brand/BrandSwitcher";
 import { useUIStore } from "@/store/useUIStore";
+import { useBrandStore } from "@/store/useBrandStore";
+import { useWorkspaceStore } from "@/store/useWorkspaceStore";
+import { PROFILE_UPDATED_EVENT } from "@/lib/profile-events";
 
 type Props = {
   children: React.ReactNode;
@@ -32,6 +39,39 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
   const pathname = usePathname();
   const router = useRouter();
   const { isSidebarOpen, setSidebarOpen } = useUIStore();
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState<number>(0);
+  /** Header name/avatar synced from DB — session.user.image is often stale after profile changes. */
+  const [headerProfile, setHeaderProfile] = useState(() => ({
+    name: user.name ?? null,
+    image: user.image ?? null,
+  }));
+  const { brands, activeBrandId, setBrands, setActiveBrandId } = useBrandStore();
+  const setActiveBrandProfileId = useWorkspaceStore((s) => s.setActiveBrandProfileId);
+
+  const refreshHeaderProfile = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/bootstrap");
+      const json = await res.json();
+      if (!res.ok || !json?.success || !json.data?.user) return;
+      const u = json.data.user as { name?: string | null; avatarUrl?: string | null };
+      setHeaderProfile({
+        name: u.name ?? null,
+        image: u.avatarUrl ?? null,
+      });
+    } catch {
+      // keep previous headerProfile
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshHeaderProfile();
+  }, [refreshHeaderProfile]);
+
+  useEffect(() => {
+    const onProfileUpdated = () => void refreshHeaderProfile();
+    window.addEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+    return () => window.removeEventListener(PROFILE_UPDATED_EVENT, onProfileUpdated);
+  }, [refreshHeaderProfile]);
 
   useEffect(() => {
     try {
@@ -43,10 +83,55 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/notifications/unread");
+        const json = await res.json();
+        if (!cancelled && json?.success && typeof json.data?.count === "number") {
+          setUnreadNotificationsCount(json.data.count);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     try {
       localStorage.setItem(SIDEBAR_KEY, isSidebarOpen ? "1" : "0");
     } catch {}
   }, [isSidebarOpen]);
+
+  useEffect(() => {
+    setActiveBrandProfileId(activeBrandId);
+  }, [activeBrandId, setActiveBrandProfileId]);
+
+  useEffect(() => {
+    if (brands.length > 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/brands");
+        const json = await res.json();
+        if (!cancelled && res.ok && json?.success && Array.isArray(json.data)) {
+          setBrands(json.data);
+          if (!activeBrandId && json.data.length > 0) {
+            const def = json.data.find((b: any) => b.isDefault);
+            setActiveBrandId((def ?? json.data[0]).id);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [brands.length, activeBrandId, setActiveBrandId, setBrands]);
 
   const links = useMemo(
     () => [
@@ -57,6 +142,9 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
       { href: "/brands", label: "Brands", icon: Palette },
       { href: "/batch", label: "Batch", icon: Boxes },
       { href: "/analytics", label: "Analytics", icon: BarChart3 },
+      { href: "/templates", label: "Templates", icon: Store },
+      { href: "/teams", label: "Teams", icon: UsersRound },
+      { href: "/docs/api", label: "API Docs", icon: BookOpen },
     ],
     []
   );
@@ -83,6 +171,28 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
           </div>
 
           <div className="ml-auto flex items-center gap-2">
+            <div className="relative">
+              <button
+                type="button"
+                aria-label="Notifications"
+                onClick={async () => {
+                  try {
+                    await fetch("/api/notifications/mark-all-read", { method: "POST" });
+                    setUnreadNotificationsCount(0);
+                  } catch {}
+                  router.push("/batch");
+                }}
+                className="flex items-center justify-center rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-3 py-2 text-sm hover:bg-[hsl(var(--surface-elevated))]/80"
+              >
+                <Bell className="h-4 w-4 text-[hsl(var(--foreground))]" />
+              </button>
+              {unreadNotificationsCount > 0 ? (
+                <span className="absolute -right-1 -top-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[hsl(var(--accent))] px-1 text-[10px] font-semibold text-white">
+                  {unreadNotificationsCount > 99 ? "99+" : unreadNotificationsCount}
+                </span>
+              ) : null}
+            </div>
+
             <Button
               onClick={() => router.push("/workspace")}
               className="hidden sm:inline-flex"
@@ -98,12 +208,17 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
                 onClick={() => router.push("/settings")}
               >
                 <span className="h-6 w-6 overflow-hidden rounded-full bg-[hsl(var(--border))]">
-                  {user.image ? (
+                  {headerProfile.image ? (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={user.image} alt="avatar" className="h-6 w-6" />
+                    <img
+                      key={headerProfile.image}
+                      src={headerProfile.image}
+                      alt=""
+                      className="h-6 w-6 object-cover"
+                    />
                   ) : null}
                 </span>
-                <span className="hidden sm:block">{user.name ?? "Account"}</span>
+                <span className="hidden sm:block">{headerProfile.name ?? user.name ?? "Account"}</span>
               </button>
             </div>
 
@@ -125,7 +240,8 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
         >
           <nav className="p-2">
             {links.map(({ href, label, icon: Icon }) => {
-              const active = pathname === href;
+              const active =
+                pathname === href || (href === "/templates" && pathname.startsWith("/templates"));
               return (
                 <Link
                   key={href}

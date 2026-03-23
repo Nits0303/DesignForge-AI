@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import DOMPurify from "dompurify";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,15 @@ export function AdminTemplatesClient({ initialTemplates }: Props) {
         <p className="text-sm text-[hsl(var(--muted-foreground))]">
           Manage seeded templates. This is a minimal admin view for Sprint 5.
         </p>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs">
+          <Link className="font-medium text-[hsl(var(--accent))]" href="/templates/contribute">
+            Contribute template (as admin preview)
+          </Link>
+          <span className="text-[hsl(var(--muted-foreground))]">·</span>
+          <Link className="font-medium text-[hsl(var(--accent))]" href="/admin/templates/review">
+            Review queue
+          </Link>
+        </div>
       </div>
       <div className="overflow-x-auto rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
         <table className="min-w-full text-left text-xs">

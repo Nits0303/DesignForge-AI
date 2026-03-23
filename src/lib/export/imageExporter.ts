@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { postProcessHtml } from "@/lib/ai/htmlPostProcessor";
 import { parseSlidesFromHtml } from "@/lib/preview/slideParser";
+import { parseMobileScreens } from "@/lib/mobile/parseMobileVersionHtml";
 import { getStorageService } from "@/lib/storage";
 import { puppeteerClient } from "@/lib/export/puppeteerClient";
 import { parse } from "node-html-parser";
@@ -98,16 +99,33 @@ export async function exportImageDesign({
 
   const brand = design.brand as any as BrandProfile;
 
-  const processed = await postProcessHtml({
-    html,
-    intent,
-    brand: { name: brand.name, typography: brand.typography as any, colors: brand.colors as any },
-  });
+  const mobileScreensRaw = parseMobileScreens(html);
+  let slides: string[];
+  let processedForSections: string;
 
-  const parsed = parseSlidesFromHtml(processed.html);
-  const slides = parsed.slides.length ? parsed.slides : [processed.html];
+  if (mobileScreensRaw && mobileScreensRaw.length > 0) {
+    slides = [];
+    for (const slideHtml of mobileScreensRaw) {
+      const processedSlide = await postProcessHtml({
+        html: slideHtml,
+        intent,
+        brand: { name: brand.name, typography: brand.typography as any, colors: brand.colors as any },
+      });
+      slides.push(processedSlide.html);
+    }
+    processedForSections = slides[0] ?? "";
+  } else {
+    const processed = await postProcessHtml({
+      html,
+      intent,
+      brand: { name: brand.name, typography: brand.typography as any, colors: brand.colors as any },
+    });
+    processedForSections = processed.html;
+    const parsed = parseSlidesFromHtml(processed.html);
+    slides = parsed.slides.length ? parsed.slides : [processed.html];
+  }
 
-  const processedDoc = parse(processed.html);
+  const processedDoc = parse(processedForSections);
   const sectionNodes = processedDoc.querySelectorAll('section[data-section-type]');
 
   const dims = normaliseDims(design.dimensions);

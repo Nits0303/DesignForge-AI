@@ -7,6 +7,7 @@ import { PLATFORM_SPECS } from "@/constants/platforms";
 type Props = {
   value: string;
   onChange: (next: string) => void;
+  textareaId?: string;
 };
 
 type ShortcodeDef = {
@@ -80,7 +81,7 @@ function platformIcon(platform: string) {
   }
 }
 
-export function ShortcodeAutocomplete({ value, onChange }: Props) {
+export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"platform" | "format">("platform");
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
@@ -199,6 +200,7 @@ export function ShortcodeAutocomplete({ value, onChange }: Props) {
   return (
     <div ref={containerRef} className="relative w-full">
       <textarea
+        id={textareaId}
         ref={textareaRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}

@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Search } from "lucide-react";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -49,6 +50,8 @@ export function TemplateBrowser({ onInsertHint }: Props) {
   const [data, setData] = useState<ApiResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<Template | null>(null);
+  const [libraryInstalled, setLibraryInstalled] = useState<Template[]>([]);
+  const [libraryOpen, setLibraryOpen] = useState(true);
 
   useEffect(() => {
     const id = setTimeout(() => setDebouncedSearch(search), 300);
@@ -68,6 +71,22 @@ export function TemplateBrowser({ onInsertHint }: Props) {
     if (activeFilters.includes("social")) return "instagram";
     return undefined;
   }, [activeFilters]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/templates/my-library?activeOnly=true");
+        const json = await res.json();
+        if (json.success && json.data?.installations) {
+          const installed = (json.data.installations as { template: Template }[]).map((r) => r.template);
+          setLibraryInstalled(installed);
+          setLibraryOpen(installed.length <= 10);
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     async function load() {
@@ -93,10 +112,27 @@ export function TemplateBrowser({ onInsertHint }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearch, tierFilter, platformFilter, page]);
 
-  const items = data?.items ?? [];
+  const installedIds = new Set(libraryInstalled.map((t) => t.id));
+  const items = (data?.items ?? []).filter((t) => !installedIds.has(t.id));
 
   return (
     <div className="flex h-full flex-col border-l border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
+      <div className="border-b border-[hsl(var(--border))] px-3 py-2">
+        <div className="flex flex-col gap-2">
+          <Link
+            href="/templates/contribute"
+            className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-2 py-1.5 text-center text-[11px] font-medium text-[hsl(var(--accent))] hover:bg-[hsl(var(--background))]"
+          >
+            Contribute template
+          </Link>
+          <Link
+            href="/templates/my-library"
+            className="text-center text-[10px] text-[hsl(var(--muted-foreground))] hover:text-[hsl(var(--foreground))]"
+          >
+            My library →
+          </Link>
+        </div>
+      </div>
       <div className="border-b border-[hsl(var(--border))] p-3">
         <div className="flex items-center gap-2 rounded-md bg-[hsl(var(--surface-elevated))] px-2 py-1.5">
           <Search className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
@@ -142,6 +178,46 @@ export function TemplateBrowser({ onInsertHint }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto p-3">
+        {libraryInstalled.length > 0 ? (
+          <div className="mb-4">
+            <button
+              type="button"
+              className="mb-2 flex w-full items-center justify-between text-[10px] font-semibold uppercase tracking-wide text-[hsl(var(--muted-foreground))]"
+              onClick={() => setLibraryOpen((o) => !o)}
+            >
+              My library ({libraryInstalled.length})
+              <span>{libraryOpen ? "−" : "+"}</span>
+            </button>
+            {libraryOpen ? (
+              <div className="grid grid-cols-2 gap-2">
+                {libraryInstalled.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => setSelected(tpl)}
+                    className="group flex flex-col rounded-md border border-[hsl(var(--accent))]/40 bg-[hsl(var(--surface-elevated))] p-2 text-left"
+                  >
+                    <div className="mb-2 flex h-16 items-center justify-center rounded-sm bg-[hsl(var(--background))] text-[10px] text-[hsl(var(--muted-foreground))]">
+                      {tpl.previewUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={tpl.previewUrl}
+                          alt={tpl.name}
+                          className="h-16 w-full rounded-sm object-cover"
+                        />
+                      ) : (
+                        <span>{tpl.category}</span>
+                      )}
+                    </div>
+                    <div className="line-clamp-1 text-[11px] font-medium text-[hsl(var(--foreground))]">
+                      {tpl.name}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="grid grid-cols-2 gap-2">
           {items.map((tpl) => (
             <button
@@ -200,16 +276,13 @@ export function TemplateBrowser({ onInsertHint }: Props) {
           {selected && (
             <div className="space-y-3">
               <div className="flex items-start justify-between gap-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-[hsl(var(--foreground))]">
-                    {selected.name}
-                  </h2>
-                  <p className="mt-0.5 text-xs text-[hsl(var(--muted-foreground))]">
-                    {selected.category} • {selected.platform} •{" "}
-                    {selected.source ?? "custom"}
-                  </p>
+                <div className="min-w-0 flex-1 space-y-1">
+                  <DialogTitle className="text-base">{selected.name}</DialogTitle>
+                  <DialogDescription>
+                    {selected.category} • {selected.platform} • {selected.source ?? "custom"}
+                  </DialogDescription>
                 </div>
-                <div className="rounded-full bg-[hsl(var(--background))] px-2 py-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+                <div className="shrink-0 rounded-full bg-[hsl(var(--background))] px-2 py-1 text-[10px] text-[hsl(var(--muted-foreground))]">
                   {Math.round((selected.avgApprovalRate ?? 0.5) * 100)}% approval
                 </div>
               </div>

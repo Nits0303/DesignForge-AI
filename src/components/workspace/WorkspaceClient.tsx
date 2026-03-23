@@ -9,6 +9,7 @@ import { WorkspaceShortcutsModal } from "@/components/workspace/WorkspaceShortcu
 import { WorkspaceTour } from "@/components/workspace/WorkspaceTour";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useWorkspaceKeyboardShortcuts } from "@/hooks/useWorkspaceKeyboardShortcuts";
+import { useDeferredProjectAssignment } from "@/hooks/useDeferredProjectAssignment";
 
 export function WorkspaceClient() {
   const router = useRouter();
@@ -32,6 +33,7 @@ export function WorkspaceClient() {
 
   // Mount keyboard shortcuts globally
   useWorkspaceKeyboardShortcuts();
+  useDeferredProjectAssignment();
 
   // ── Load design from URL designId ──────────────────────────────────────
   useEffect(() => {
@@ -105,7 +107,7 @@ export function WorkspaceClient() {
       {/* Mobile layout */}
       <div className="flex h-[calc(100vh-56px)] w-full items-stretch border-t border-[hsl(var(--border))] md:hidden">
         <div className="relative flex-1">
-          <WorkspacePreviewPanel />
+          <WorkspacePreviewPanel layout="mobile" />
           <div className="absolute left-3 top-3 z-30">
             <button
               type="button"
@@ -122,7 +124,7 @@ export function WorkspaceClient() {
             id="workspace-mobile-prompt"
             className="hidden absolute inset-x-0 bottom-0 z-40 max-h-[70%] rounded-t-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))]"
           >
-            <WorkspacePromptPanel prompt={prompt} setPrompt={setPrompt} />
+            <WorkspacePromptPanel layout="mobile" prompt={prompt} setPrompt={setPrompt} />
           </div>
         </div>
         <div className="hidden h-full w-[260px] border-l border-[hsl(var(--border))] bg-[hsl(var(--surface))] sm:block">
@@ -132,8 +134,8 @@ export function WorkspaceClient() {
 
       {/* Desktop layout */}
       <div className={layoutCls}>
-        <WorkspacePromptPanel prompt={prompt} setPrompt={setPrompt} />
-        <WorkspacePreviewPanel />
+        <WorkspacePromptPanel layout="desktop" prompt={prompt} setPrompt={setPrompt} />
+        <WorkspacePreviewPanel layout="desktop" />
         <WorkspaceRightPanel />
       </div>
 

@@ -96,10 +96,14 @@ export async function POST(req: Request) {
       "Note: the link expires in 24 hours.",
     ];
 
+    // User-initiated export counts as implicit approval.
+    await prisma.generationLog.updateMany({ where: { designId }, data: { wasApproved: true } });
+
     return ok({ shareUrl, expiresAt: existingShare.expiresAt.toISOString(), instructions });
   }
 
   const out = await exportFigmaBridge({ designId, versionNumber: targetVersion });
+  await prisma.generationLog.updateMany({ where: { designId }, data: { wasApproved: true } });
   return ok({ shareUrl: out.shareUrl, expiresAt: out.expiresAt, instructions: out.instructions });
 }
 

@@ -10,14 +10,6 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 
 type Brand = any;
 
-const SECTIONS = [
-  { id: "identity", label: "Identity" },
-  { id: "colors", label: "Colors" },
-  { id: "typography", label: "Typography" },
-  { id: "assets", label: "Assets" },
-  { id: "settings", label: "Settings" },
-] as const;
-
 const FONTS = [
   "Inter",
   "Roboto",
@@ -42,11 +34,6 @@ export function BrandDetailClient({ initialBrand }: { initialBrand: Brand }) {
 
   const colors = useMemo(() => ({ ...(brand.colors ?? {}) }), [brand]);
   const typography = useMemo(() => ({ ...(brand.typography ?? {}) }), [brand]);
-
-  const scrollTo = (id: string) => {
-    const el = document.getElementById(id);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  };
 
   const save = async (patch: any) => {
     setSaving(true);
@@ -133,23 +120,8 @@ export function BrandDetailClient({ initialBrand }: { initialBrand: Brand }) {
   };
 
   return (
-    <div className="flex w-full gap-6">
-      <aside className="hidden w-52 shrink-0 md:block">
-        <div className="sticky top-24 space-y-1 rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-2">
-          {SECTIONS.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => scrollTo(s.id)}
-              className="w-full rounded-[var(--radius)] px-3 py-2 text-left text-sm text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--surface-elevated))] hover:text-[hsl(var(--foreground))]"
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </aside>
-
-      <div className="flex-1 space-y-10">
+    <div className="mx-auto w-full max-w-6xl">
+      <div className="space-y-10">
         <div className="flex items-start justify-between gap-4 rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))] px-5 py-4">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[hsl(var(--accent))]">
@@ -526,6 +498,7 @@ export function BrandDetailClient({ initialBrand }: { initialBrand: Brand }) {
           </div>
         </section>
       </div>
+
       {/* Delete asset dialog */}
       <Dialog open={assetToDelete !== null} onOpenChange={() => setAssetToDelete(null)}>
         <DialogContent className="max-w-sm">

@@ -175,12 +175,37 @@ export function useDesignGeneration() {
                 const prev = useWorkspaceStore.getState().previewHtml ?? "";
                 setPreviewHtml(prev + sectionHtml);
               }
+            } else if (evt.event === "screen_start") {
+              const idx = Number(evt.data.screenIndex ?? 0) + 1;
+              const total = Number(evt.data.totalScreens ?? 1);
+              const title = String(evt.data.screenTitle ?? "");
+              setStatusMessage(
+                title ? `Screen ${idx}/${total}: ${title}…` : `Generating screen ${idx}/${total}…`
+              );
+              setGenerationState("generating");
+            } else if (evt.event === "screen_complete") {
+              const html = String(evt.data.screenHtml ?? "");
+              if (html) setPreviewHtml(html);
             } else if (evt.event === "complete") {
               if (evt.data.versionNumber) {
                 setActiveVersionNumber(evt.data.versionNumber);
               }
               if (evt.data.html) {
-                setPreviewHtml(evt.data.html);
+                const raw = String(evt.data.html);
+                if (raw.trim().startsWith("[")) {
+                  try {
+                    const arr = JSON.parse(raw) as unknown;
+                    if (Array.isArray(arr) && typeof arr[0] === "string") {
+                      setPreviewHtml(arr[0] as string);
+                    } else {
+                      setPreviewHtml(raw);
+                    }
+                  } catch {
+                    setPreviewHtml(raw);
+                  }
+                } else {
+                  setPreviewHtml(raw);
+                }
               }
               setGenerationState("complete");
               setStatusMessage(null);

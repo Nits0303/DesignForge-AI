@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Copy, Download, ExternalLink, FileCode2, FileImage, FileJson, FileText, FileUp, Loader2, Plus, RotateCw, Share2, Zap } from "lucide-react";
-import { DialogContent, Dialog } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useUIStore } from "@/store/useUIStore";
@@ -73,6 +73,9 @@ export function ExportModal({
   const [history, setHistory] = useState<ExportHistoryItem[]>([]);
   const loadedRef = useRef(false);
 
+  /** UserPreference `figma_plugin_installed` — drives Figma tab UX. */
+  const [figmaPluginInstalled, setFigmaPluginInstalled] = useState<boolean | null>(null);
+
   useEffect(() => {
     if (!open || !activeDesignId) return;
     if (loadedRef.current) return;
@@ -93,6 +96,37 @@ export function ExportModal({
       }
     })();
   }, [open, activeDesignId]);
+
+  useEffect(() => {
+    if (!open) return;
+    (async () => {
+      try {
+        const res = await fetch("/api/preferences?key=figma_plugin_installed");
+        const json = await res.json();
+        if (res.ok && json.success) {
+          const v = json.data?.preferenceValue;
+          setFigmaPluginInstalled(v === true);
+        } else {
+          setFigmaPluginInstalled(false);
+        }
+      } catch {
+        setFigmaPluginInstalled(false);
+      }
+    })();
+  }, [open]);
+
+  const saveFigmaPluginPreference = async (installed: boolean) => {
+    try {
+      await fetch("/api/preferences/figma_plugin_installed", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferenceValue: installed }),
+      });
+      setFigmaPluginInstalled(installed);
+    } catch {
+      enqueueToast({ title: "Could not save preference", type: "error" });
+    }
+  };
 
   useEffect(() => {
     if (!open) {
@@ -252,15 +286,42 @@ export function ExportModal({
     }
   };
 
+  const startFigmaPluginPush = async () => {
+    if (!activeDesignId) return;
+    setIsWorking(true);
+    setResult(null);
+    try {
+      const res = await fetch(`/api/export/figma-plugin-notify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ designId: activeDesignId, versionNumber: activeVersionNumber ?? undefined }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        enqueueToast({ title: "Could not queue push", description: json?.error?.message ?? "Unknown error", type: "error" });
+        return;
+      }
+      setResult({ ...json.data, pluginPush: true });
+      setJobStatus("complete");
+      enqueueToast({
+        title: "Ready in Figma",
+        description: "Open the DesignForge plugin — your design will appear ready to push.",
+        type: "success",
+      });
+    } finally {
+      setIsWorking(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-sm font-semibold">Export Design</div>
-            <div className="text-xs text-[hsl(var(--muted-foreground))]">Ready to download or share.</div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 space-y-1">
+            <DialogTitle className="text-base">Export Design</DialogTitle>
+            <DialogDescription>Ready to download or share.</DialogDescription>
           </div>
-          <Button size="sm" variant="ghost" onClick={() => onOpenChange(false)}>
+          <Button size="sm" variant="ghost" className="shrink-0" onClick={() => onOpenChange(false)}>
             Close
           </Button>
         </div>
@@ -404,19 +465,63 @@ export function ExportModal({
           ) : null}
 
           {tab === "figma" ? (
-            <div className="space-y-3">
-              <div className="text-xs text-[hsl(var(--muted-foreground))]">
-                Creates a temporary link that the html.to.design plugin can import.
+            <div className="space-y-4">
+              <div className="text-xs font-semibold text-[hsl(var(--foreground))]">Have the DesignForge Figma plugin?</div>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={figmaPluginInstalled === true ? "default" : "secondary"}
+                  onClick={() => void saveFigmaPluginPreference(true)}
+                  disabled={figmaPluginInstalled === null}
+                >
+                  Yes
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={figmaPluginInstalled === false ? "default" : "secondary"}
+                  onClick={() => void saveFigmaPluginPreference(false)}
+                  disabled={figmaPluginInstalled === null}
+                >
+                  No
+                </Button>
               </div>
-              <Button className="w-full" onClick={() => void startFigmaExport()} disabled={isWorking || !activeDesignId}>
-                {isWorking ? (
-                  <span className="inline-flex items-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" /> Generating link…
-                  </span>
-                ) : (
-                  <>Generate Figma Link</>
-                )}
-              </Button>
+
+              {figmaPluginInstalled === true ? (
+                <div className="space-y-2 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-3">
+                  <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                    Queues this design for the plugin. Open the DesignForge plugin in Figma — it will show a{" "}
+                    <strong className="text-[hsl(var(--foreground))]">ready to push</strong> banner (polls every ~30s).
+                  </p>
+                  <Button className="w-full" onClick={() => void startFigmaPluginPush()} disabled={isWorking || !activeDesignId}>
+                    {isWorking ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Preparing…
+                      </span>
+                    ) : (
+                      <>Push to Figma</>
+                    )}
+                  </Button>
+                </div>
+              ) : figmaPluginInstalled === false ? (
+                <div className="space-y-3">
+                  <div className="text-xs text-[hsl(var(--muted-foreground))]">
+                    Creates a temporary link that the <strong>html.to.design</strong> plugin can import (same as before).
+                  </div>
+                  <Button className="w-full" onClick={() => void startFigmaExport()} disabled={isWorking || !activeDesignId}>
+                    {isWorking ? (
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Generating link…
+                      </span>
+                    ) : (
+                      <>Generate Figma Link</>
+                    )}
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-xs text-[hsl(var(--muted-foreground))]">Loading preference…</div>
+              )}
             </div>
           ) : null}
 
@@ -501,7 +606,30 @@ export function ExportModal({
 
                 {tab === "figma" ? (
                   <div className="mt-2 space-y-2">
-                    {result.shareUrl ? (
+                    {result.pluginPush && result.shareUrl ? (
+                      <>
+                        <div className="text-[hsl(var(--muted-foreground))]">Preview link (also sent to the plugin)</div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            readOnly
+                            value={result.shareUrl}
+                            className="flex-1 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-2 py-1 text-xs"
+                          />
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={async () => {
+                              await navigator.clipboard.writeText(result.shareUrl);
+                              enqueueToast({ title: "Link copied", type: "success" });
+                            }}
+                          >
+                            <Copy className="mr-1 h-3.5 w-3.5" />
+                            Copy
+                          </Button>
+                        </div>
+                        <div className="text-[hsl(var(--muted-foreground))] text-xs">Expires in 24 hours</div>
+                      </>
+                    ) : result.shareUrl ? (
                       <>
                         <div className="text-[hsl(var(--muted-foreground))]">Share URL</div>
                         <div className="flex items-center gap-2">

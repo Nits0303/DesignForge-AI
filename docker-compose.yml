@@ -113,6 +113,26 @@ services:
     networks:
       - designforge-network
 
+  learning-cron:
+    image: node:22-alpine
+    command: sh -c "npx ts-node src/scripts/learningBatchCron.ts"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - PUPPETEER_SERVICE_URL=http://puppeteer:3000
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - designforge-network
+
 networks:
   designforge-network:
     driver: bridge

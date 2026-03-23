@@ -46,11 +46,11 @@ export const REVISION_SUGGESTIONS: Partial<Record<Platform, string[]>> = {
     "Make the primary metric stand out more",
   ],
   mobile: [
-    "Increase tap target sizes for buttons",
-    "Improve bottom navigation visibility",
-    "Add more padding around content",
-    "Make headings larger for small screens",
-    "Simplify the layout for one-thumb navigation",
+    "Make the tap targets larger",
+    "Add a bottom tab bar",
+    "Make the headline more prominent",
+    "Adjust the spacing for better readability",
+    "Add a progress indicator for the flow",
   ],
 };
 

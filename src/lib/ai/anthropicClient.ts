@@ -1,7 +1,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import type { Messages } from "@anthropic-ai/sdk/resources";
-import { AI_MODELS, AI_PRICING } from "@/constants/models";
+import { AI_MODELS, AI_PRICING, getPricingForModel } from "@/constants/models";
 import { logAIUsage } from "@/lib/ai/usageLogger";
+import { callGeminiWithRetry, isGeminiPrimaryLlm } from "@/lib/ai/geminiClient";
 
 const globalForAnthropic = globalThis as unknown as {
   anthropic?: Anthropic;
@@ -19,12 +20,43 @@ if (process.env.NODE_ENV !== "production") {
 
 type MessageParams = Omit<Anthropic.Messages.MessageCreateParamsNonStreaming, "model"> & {
   model: (typeof AI_MODELS)[keyof typeof AI_MODELS];
+  /** Anthropic prompt cache metadata; ignored when using Gemini. */
+  metadata?: unknown;
 };
+
+function anthropicSystemToOptionalString(params: MessageParams): string | undefined {
+  const s = params.system;
+  if (s == null) return undefined;
+  if (typeof s === "string") return s;
+  if (Array.isArray(s)) {
+    return s
+      .map((b) =>
+        b && typeof b === "object" && "type" in b && (b as { type?: string }).type === "text" && "text" in b
+          ? String((b as { text?: string }).text ?? "")
+          : ""
+      )
+      .join("\n")
+      .trim();
+  }
+  return undefined;
+}
 
 export async function callAnthropicWithRetry(
   params: MessageParams,
   opts: { userId: string; designId?: string | null }
 ): Promise<Messages.Message> {
+  if (isGeminiPrimaryLlm()) {
+    return callGeminiWithRetry(
+      {
+        model: params.model,
+        system: anthropicSystemToOptionalString(params),
+        max_tokens: params.max_tokens,
+        messages: params.messages,
+      },
+      opts
+    );
+  }
+
   const delays = [1000, 3000, 9000];
 
   let lastError: any;
@@ -38,7 +70,7 @@ export async function callAnthropicWithRetry(
         });
       }
 
-      const res = await anthropic.messages.create(params);
+      const res = (await anthropic.messages.create(params as any)) as Messages.Message;
 
       const usage = res.usage;
       const inputTokens = usage?.input_tokens ?? 0;
@@ -46,8 +78,7 @@ export async function callAnthropicWithRetry(
       const cacheRead = usage?.cache_read_input_tokens ?? 0;
       const cacheWrite = usage?.cache_creation_input_tokens ?? 0;
 
-      const pricing =
-        params.model === AI_MODELS.ROUTER_HAIKU ? AI_PRICING.HAIKU : AI_PRICING.SONNET;
+      const pricing = getPricingForModel(params.model);
 
       const costInput =
         (inputTokens / 1_000_000) * pricing.inputPerMTokens +

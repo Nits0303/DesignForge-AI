@@ -1,6 +1,14 @@
 import { auth } from "@/auth";
 
-const publicPaths = ["/login", "/register", "/api/auth", "/api/health", "/api/files"];
+const publicPaths = [
+  "/login",
+  "/register",
+  "/forgot-password",
+  "/reset-password",
+  "/api/auth",
+  "/api/health",
+  "/api/files",
+];
 const authPaths = ["/login", "/register"];
 
 export default auth((req) => {

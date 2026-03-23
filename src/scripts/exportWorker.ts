@@ -70,6 +70,15 @@ async function processJob(jobId: string) {
       throw new Error(`Unknown export job format: ${job.format}`);
     }
 
+    // Any user-initiated export counts as implicit approval for learning signals.
+    // Exclude internal thumbnail generation.
+    if (base !== "thumbnail") {
+      await prisma.generationLog.updateMany({
+        where: { designId: job.designId },
+        data: { wasApproved: true },
+      });
+    }
+
     await prisma.exportJob.update({
       where: { id: jobId },
       data: { status: "complete", resultUrl: resultUrl ?? null, errorMessage: null },

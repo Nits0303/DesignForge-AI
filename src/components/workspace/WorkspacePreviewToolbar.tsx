@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ExternalLink, RefreshCw, Share2, ThumbsUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
@@ -8,7 +8,12 @@ import { useUIStore } from "@/store/useUIStore";
 import { useDesignGeneration } from "@/hooks/useDesignGeneration";
 import { ExportModal } from "@/components/workspace/ExportModal";
 
-export function WorkspacePreviewToolbar() {
+export function WorkspacePreviewToolbar({
+  idSuffix = "",
+}: {
+  /** Suffix for button ids when a second preview toolbar exists (mobile vs desktop). */
+  idSuffix?: "" | "-mobile";
+}) {
   const {
     activeDesignId,
     lastGenerationMeta,
@@ -27,6 +32,7 @@ export function WorkspacePreviewToolbar() {
   const [sharing, setSharing] = useState(false);
   const [showRegenConfirm, setShowRegenConfirm] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const regenWrapRef = useRef<HTMLDivElement | null>(null);
 
   const platform = lastGenerationMeta?.platform ?? "";
   const format = lastGenerationMeta?.format ?? "";
@@ -86,6 +92,31 @@ export function WorkspacePreviewToolbar() {
     document.title = `${title.trim()} – DesignForge AI`;
   };
 
+  // Close the small regenerate confirmation popover on outside click / Escape.
+  useEffect(() => {
+    if (!showRegenConfirm) return;
+
+    function onPointerDown(e: PointerEvent) {
+      const wrap = regenWrapRef.current;
+      if (!wrap) return;
+      const target = e.target;
+      if (target instanceof Node && !wrap.contains(target)) {
+        setShowRegenConfirm(false);
+      }
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowRegenConfirm(false);
+    }
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showRegenConfirm]);
+
   return (
     <div className="flex items-center justify-between border-b border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-3 py-1.5">
       {/* Left: title + badges */}
@@ -126,7 +157,7 @@ export function WorkspacePreviewToolbar() {
       <div className="flex items-center gap-1.5 shrink-0">
         {/* Approve */}
         <Button
-          id="approve-btn"
+          id={`approve-btn${idSuffix}`}
           size="sm"
           variant={approved ? "default" : "secondary"}
           onClick={handleApprove}
@@ -138,9 +169,9 @@ export function WorkspacePreviewToolbar() {
         </Button>
 
         {/* Regenerate */}
-        <div className="relative">
+        <div className="relative" ref={regenWrapRef}>
           <Button
-            id="regenerate-btn"
+            id={`regenerate-btn${idSuffix}`}
             size="sm"
             variant="secondary"
             onClick={() => setShowRegenConfirm((v) => !v)}

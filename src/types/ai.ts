@@ -1,4 +1,14 @@
 import type { DesignFormat, Platform } from "@/types/design";
+import type { MobileAppCategory } from "@/constants/mobileAppCategories";
+
+/** One screen in a mobile flow (onboarding, auth, checkout, …). */
+export type MobileScreenDescriptor = {
+  screenIndex: number;
+  screenType: string;
+  screenTitle: string;
+  primaryAction: string;
+  navigationPattern: "next_button" | "swipe" | "tab" | "back_button";
+};
 
 export type ParsedIntent = {
   platform: Platform;
@@ -13,6 +23,16 @@ export type ParsedIntent = {
    * Example: ["navbar","hero","social_proof","features","pricing","footer"]
    */
   sectionPlan?: string[];
+  /**
+   * Mobile multi-screen flows: ordered list of screen descriptors from the Smart Router / flow planner.
+   */
+  screenPlan?: MobileScreenDescriptor[];
+  /** Target OS conventions for mobile generation. */
+  appOS?: "ios" | "android" | "cross_platform";
+  /** High-level app category for mobile styling. */
+  appCategory?: MobileAppCategory;
+  /** Light vs dark app chrome (not the same as global DesignForge dark theme). */
+  appTheme?: "light" | "dark";
   styleContext?: string[];
   contentRequirements?: string[];
   requiresImageGeneration?: boolean;

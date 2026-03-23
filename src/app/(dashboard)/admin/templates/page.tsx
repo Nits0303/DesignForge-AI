@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { auth } from "@/lib/auth/auth";
 import { prisma } from "@/lib/db/prisma";
 import { AdminTemplatesClient } from "@/components/admin/AdminTemplatesClient";
+import { AdminSectionErrorBoundary } from "@/components/admin/AdminSectionErrorBoundary";
 
 export const runtime = "nodejs";
 
@@ -24,12 +25,14 @@ export default async function AdminTemplatesPage() {
   });
 
   return (
-    <AdminTemplatesClient
-      initialTemplates={templates.map((t) => ({
-        ...t,
-        updatedAt: t.updatedAt.toISOString(),
-      }))}
-    />
+    <AdminSectionErrorBoundary title="Admin templates">
+      <AdminTemplatesClient
+        initialTemplates={templates.map((t) => ({
+          ...t,
+          updatedAt: t.updatedAt.toISOString(),
+        }))}
+      />
+    </AdminSectionErrorBoundary>
   );
 }
 

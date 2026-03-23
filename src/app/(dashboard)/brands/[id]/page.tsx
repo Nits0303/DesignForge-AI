@@ -3,6 +3,8 @@ import { auth } from "@/lib/auth/auth";
 import { prisma } from "@/lib/db/prisma";
 import { BrandDetailClient } from "@/components/brand/BrandDetailClient";
 
+export const runtime = "nodejs";
+
 export default async function BrandDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   const userId = session?.user?.id;

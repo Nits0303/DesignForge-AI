@@ -28,8 +28,26 @@ export async function POST(req: NextRequest) {
     const { name, email, password } = parsed.data;
 
     const existing = await prisma.user.findUnique({ where: { email } });
+
+    // If the user already exists but was created via OAuth (or an earlier failed attempt),
+    // allow them to "upgrade" this account by setting a password.
     if (existing) {
-      return fail("EMAIL_ALREADY_EXISTS", "An account with this email already exists.", 409);
+      if (existing.passwordHash) {
+        return fail("EMAIL_ALREADY_EXISTS", "An account with this email already exists.", 409);
+      }
+
+      const passwordHash = await bcrypt.hash(password, 12);
+      const user = await prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          name: existing.name ?? name,
+          passwordHash,
+          authProvider: "email",
+          lastLoginAt: new Date(),
+        },
+      });
+
+      return ok({ id: user.id, name: user.name, email: user.email }, 200);
     }
 
     const passwordHash = await bcrypt.hash(password, 12);

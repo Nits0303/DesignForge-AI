@@ -7,22 +7,33 @@ import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { sanitizeHtmlForIframe } from "@/lib/ai/htmlSanitizer.client";
 import { useDesignGeneration } from "@/hooks/useDesignGeneration";
 import { parseSlidesFromHtml } from "@/lib/preview/slideParser";
+import { parseMobileScreens } from "@/lib/mobile/parseMobileVersionHtml";
 import { PreviewErrorBoundary } from "@/components/workspace/PreviewErrorBoundary";
 import { WorkspacePreviewToolbar } from "@/components/workspace/WorkspacePreviewToolbar";
 import { PLATFORM_SPECS } from "@/constants/platforms";
 import type { Platform } from "@/types/design";
+import {
+  MOBILE_DEVICE_PRESETS,
+  applyOrientation,
+  getMobileDevicePreset,
+  type MobileDeviceId,
+} from "@/constants/mobileDevices";
+import { IosFrame } from "@/components/workspace/PhoneFrames/IosFrame";
+import { AndroidFrame } from "@/components/workspace/PhoneFrames/AndroidFrame";
+import { TabletFrame } from "@/components/workspace/PhoneFrames/TabletFrame";
+import { MobileStatusBar } from "@/components/workspace/PhoneFrames/MobileStatusBar";
 
 type SlideMode = "single" | "carousel" | "multi-screen";
 
 const SOCIAL_PLATFORMS = new Set(["instagram", "linkedin", "facebook", "twitter"]);
 
-const DEVICE_SIZES: Record<string, { width: number; height: number; label: string }> = {
-  "ios-standard":    { width: 390,  height: 844,  label: "iOS Standard"  },
-  "ios-small":       { width: 375,  height: 667,  label: "iOS Small"     },
-  "android-standard":{ width: 360,  height: 780,  label: "Android Std"   },
-};
-
-export function WorkspacePreviewPanel() {
+export function WorkspacePreviewPanel({
+  layout = "desktop",
+}: {
+  /** Second instance is mounted for mobile layout; ids must not collide. */
+  layout?: "desktop" | "mobile";
+}) {
+  const idSuf = layout === "mobile" ? "-mobile" : "";
   const { startGeneration } = useDesignGeneration();
   const {
     previewHtml,
@@ -45,6 +56,10 @@ export function WorkspacePreviewPanel() {
     hoveredSectionType,
     scrollToSectionType,
     setScrollToSectionType,
+    activeDeviceId,
+    setActiveDeviceId,
+    deviceOrientation,
+    setDeviceOrientation,
   } = useWorkspaceStore((s) => s);
 
   const [flashBorder, setFlashBorder] = useState(false);
@@ -54,8 +69,13 @@ export function WorkspacePreviewPanel() {
   const mainIframeRef = useRef<HTMLIFrameElement | null>(null);
   const [fitScale, setFitScale] = useState(1);
   const [responsiveMode, setResponsiveMode] = useState(false);
-  const [mobileDevice, setMobileDevice] = useState("ios-standard");
   const [autoHeightPx, setAutoHeightPx] = useState<number | null>(null);
+
+  const mobilePreset = useMemo(() => getMobileDevicePreset(activeDeviceId), [activeDeviceId]);
+  const orientedDevice = useMemo(
+    () => applyOrientation(mobilePreset, deviceOrientation),
+    [mobilePreset, deviceOrientation]
+  );
 
   useEffect(() => {
     if (!versionFlashNonce) return;
@@ -75,6 +95,16 @@ export function WorkspacePreviewPanel() {
     }
     if (isWebOrDash) setAutoHeightPx(null);
     try {
+      // Sprint 14 mobile flows: version html is JSON.stringify(string[])
+      if (html.trim().startsWith("[")) {
+        const mobileScreens = parseMobileScreens(html);
+        if (mobileScreens && mobileScreens.length > 0) {
+          setSlides(mobileScreens);
+          setSlideMode("multi-screen");
+          setActiveSlide(Math.min(activeSlide, mobileScreens.length - 1));
+          return;
+        }
+      }
       const parsed = parseSlidesFromHtml(html);
       setSlides(parsed.slides);
       setSlideMode(parsed.type);
@@ -100,8 +130,7 @@ export function WorkspacePreviewPanel() {
 
   const dimensions = useMemo(() => {
     if (isMobile) {
-      const dev = DEVICE_SIZES[mobileDevice];
-      if (dev) return { width: dev.width, height: dev.height };
+      return { width: orientedDevice.width, height: orientedDevice.height };
     }
     const d = lastGenerationMeta?.dimensions;
     if (!d) return { width: 1080, height: 1080 };
@@ -109,11 +138,16 @@ export function WorkspacePreviewPanel() {
       return { width: (d as any).width ?? 1080, height: 900 };
     }
     return d as any;
-  }, [lastGenerationMeta?.dimensions, isMobile, mobileDevice]);
+  }, [lastGenerationMeta?.dimensions, isMobile, orientedDevice.height, orientedDevice.width]);
 
-  const iframeWidth =
-    breakpoint === "desktop" ? dimensions.width : breakpoint === "tablet" ? 768 : 375;
-  const iframeHeight = dimensions.height;
+  const iframeWidth = isMobile
+    ? orientedDevice.width
+    : breakpoint === "desktop"
+      ? dimensions.width
+      : breakpoint === "tablet"
+        ? 768
+        : 375;
+  const iframeHeight = isMobile ? orientedDevice.height : dimensions.height;
   const displayedIframeHeight = isWebOrDash ? autoHeightPx ?? iframeHeight : iframeHeight;
 
   const isLoading =
@@ -125,6 +159,16 @@ export function WorkspacePreviewPanel() {
     slides.length > 0 ? slides[Math.min(activeSlide, slides.length - 1)] ?? slides[0] : previewHtml;
   const showSlidesControls = slides.length > 1;
 
+  /** Phone frames add bezel — include in “fit” math so the artboard doesn’t clip. */
+  const fitBoxW =
+    isMobile ?
+      iframeWidth + (mobilePreset.os === "tablet" ? 52 : mobilePreset.os === "android" ? 26 : 30)
+    : iframeWidth;
+  const fitBoxH =
+    isMobile ?
+      iframeHeight + (mobilePreset.os === "tablet" ? 52 : mobilePreset.os === "android" ? 32 : 38)
+    : displayedIframeHeight;
+
   useEffect(() => {
     const el = artboardRef.current;
     if (!el) return;
@@ -133,14 +177,14 @@ export function WorkspacePreviewPanel() {
       const padding = 48;
       const availableW = Math.max(rect.width - padding, 1);
       const availableH = Math.max(rect.height - padding, 1);
-      const baseScale = Math.min(availableW / iframeWidth, availableH / displayedIframeHeight, 1);
+      const baseScale = Math.min(availableW / fitBoxW, availableH / fitBoxH, 1);
       setFitScale(baseScale);
     };
     compute();
     const ro = new ResizeObserver(compute);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [iframeWidth, displayedIframeHeight]);
+  }, [fitBoxW, fitBoxH]);
 
   // Listen for auto-height messages from website/dashboard renders inside the iframe.
   useEffect(() => {
@@ -190,10 +234,13 @@ export function WorkspacePreviewPanel() {
   const hasSectionNav = isWebOrDash && Array.isArray(sectionPlan) && sectionPlan.length >= 4;
 
   return (
-    <div className="relative flex h-full flex-col border-r border-[hsl(var(--border))] bg-[hsl(var(--background))]">
+    <div
+      id={`workspace-preview-panel${idSuf}`}
+      className="relative flex h-full flex-col border-r border-[hsl(var(--border))] bg-[hsl(var(--background))]"
+    >
       {/* Top toolbar */}
       <div className="z-30 shrink-0">
-        <WorkspacePreviewToolbar />
+        <WorkspacePreviewToolbar idSuffix={layout === "mobile" ? "-mobile" : ""} />
       </div>
 
       {/* Info badge */}
@@ -238,20 +285,43 @@ export function WorkspacePreviewPanel() {
       {/* Mobile device switcher */}
       {isMobile && (
         <div className="absolute left-3 bottom-20 z-20 flex flex-col gap-1 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))]/90 p-1.5 backdrop-blur">
-          {Object.entries(DEVICE_SIZES).map(([key, d]) => (
+          {(Object.keys(MOBILE_DEVICE_PRESETS) as MobileDeviceId[]).map((id) => {
+            const p = MOBILE_DEVICE_PRESETS[id];
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveDeviceId(id)}
+                className={`rounded px-2 py-1 text-left text-[10px] ${
+                  activeDeviceId === id
+                    ? "bg-[hsl(var(--accent-muted))] text-[hsl(var(--foreground))]"
+                    : "text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--surface))]"
+                }`}
+              >
+                {p.label}
+              </button>
+            );
+          })}
+          <div className="mt-1 flex gap-1 border-t border-[hsl(var(--border))] pt-1">
             <button
-              key={key}
               type="button"
-              onClick={() => setMobileDevice(key)}
-              className={`rounded px-2 py-1 text-[10px] ${
-                mobileDevice === key
-                  ? "bg-[hsl(var(--accent-muted))] text-[hsl(var(--foreground))]"
-                  : "text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--surface))]"
+              className={`flex-1 rounded px-1 py-0.5 text-[9px] ${
+                deviceOrientation === "portrait" ? "bg-[hsl(var(--accent-muted))]" : ""
               }`}
+              onClick={() => setDeviceOrientation("portrait")}
             >
-              {d.label}
+              Portrait
             </button>
-          ))}
+            <button
+              type="button"
+              className={`flex-1 rounded px-1 py-0.5 text-[9px] ${
+                deviceOrientation === "landscape" ? "bg-[hsl(var(--accent-muted))]" : ""
+              }`}
+              onClick={() => setDeviceOrientation("landscape")}
+            >
+              Landscape
+            </button>
+          </div>
         </div>
       )}
 
@@ -323,7 +393,7 @@ export function WorkspacePreviewPanel() {
                       <div style={{ width: w, height: displayedIframeHeight, transform: `scale(${scale})`, transformOrigin: "top left" }}>
                         <iframe
                           title={`${label} preview`}
-                          sandbox="allow-same-origin allow-scripts"
+                          sandbox="allow-scripts"
                           srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
                           className="h-full w-full border-0"
                           style={{ width: w, height: displayedIframeHeight }}
@@ -336,52 +406,110 @@ export function WorkspacePreviewPanel() {
             </div>
           ) : (
             <div
-              className={`overflow-hidden rounded border border-[hsl(var(--border))] bg-white transition-all duration-200 ${
+              className={`overflow-hidden transition-all duration-200 ${
                 flashBorder ? "workspace-version-flash" : ""
-              } ${isMobile ? "shadow-2xl" : ""}`}
+              } ${
+                isMobile
+                  ? "border-0 bg-transparent shadow-none"
+                  : "rounded border border-[hsl(var(--border))] bg-white"
+              }`}
               style={{
-                width: iframeWidth,
-                height: displayedIframeHeight,
+                width: isMobile ? "auto" : iframeWidth,
+                height: isMobile ? "auto" : displayedIframeHeight,
                 transform:
                   previewMode === "fit"
                     ? `scale(${fitScale * zoomLevel})`
                     : `scale(${1})`,
                 transformOrigin: "top center",
-                /* Phone frame outline for mobile */
-                ...(isMobile
-                  ? {
-                      borderRadius: "2.5rem",
-                      border: "8px solid #1a1a1a",
-                      boxShadow: "0 0 0 2px #333, 0 20px 60px rgba(0,0,0,0.4)",
-                    }
-                  : {}),
-                /* Browser chrome: applied via wrapper below */
               }}
             >
-              {platform === "dashboard" && (
-                <div className="flex items-center gap-1.5 bg-[#2a2a2a] px-3 py-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-yellow-400" />
-                  <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
-                  <div className="ml-2 flex-1 rounded bg-[#3a3a3a] px-2 py-0.5 text-[10px] text-[#888]">
-                    https://dashboard.example.com
-                  </div>
-                </div>
+              {isMobile ? (
+                mobilePreset.os === "android" ? (
+                  <AndroidFrame width={iframeWidth} height={iframeHeight}>
+                    <div className="relative h-full w-full bg-white">
+                      <MobileStatusBar
+                        variant="android"
+                        className="absolute left-0 right-0 top-0 z-10 bg-gradient-to-b from-black/40 to-transparent"
+                      />
+                      <PreviewErrorBoundary>
+                        <iframe
+                          title="Design preview"
+                          ref={mainIframeRef}
+                          sandbox="allow-scripts"
+                          srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                          className="absolute inset-0 border-0"
+                          style={{ width: "100%", height: "100%", display: "block" }}
+                        />
+                      </PreviewErrorBoundary>
+                    </div>
+                  </AndroidFrame>
+                ) : mobilePreset.os === "tablet" ? (
+                  <TabletFrame width={iframeWidth} height={iframeHeight}>
+                    <div className="relative h-full w-full bg-white">
+                      <MobileStatusBar
+                        variant="ios"
+                        className="absolute left-0 right-0 top-0 z-10 bg-gradient-to-b from-black/40 to-transparent"
+                      />
+                      <PreviewErrorBoundary>
+                        <iframe
+                          title="Design preview"
+                          ref={mainIframeRef}
+                          sandbox="allow-scripts"
+                          srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                          className="absolute inset-0 border-0"
+                          style={{ width: "100%", height: "100%", display: "block" }}
+                        />
+                      </PreviewErrorBoundary>
+                    </div>
+                  </TabletFrame>
+                ) : (
+                  <IosFrame width={iframeWidth} height={iframeHeight}>
+                    <div className="relative h-full w-full bg-white">
+                      <MobileStatusBar
+                        variant="ios"
+                        className="absolute left-0 right-0 top-0 z-10 bg-gradient-to-b from-black/40 to-transparent"
+                      />
+                      <PreviewErrorBoundary>
+                        <iframe
+                          title="Design preview"
+                          ref={mainIframeRef}
+                          sandbox="allow-scripts"
+                          srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                          className="absolute inset-0 border-0"
+                          style={{ width: "100%", height: "100%", display: "block" }}
+                        />
+                      </PreviewErrorBoundary>
+                    </div>
+                  </IosFrame>
+                )
+              ) : (
+                <>
+                  {platform === "dashboard" && (
+                    <div className="flex items-center gap-1.5 bg-[#2a2a2a] px-3 py-2">
+                      <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-yellow-400" />
+                      <span className="h-2.5 w-2.5 rounded-full bg-green-500" />
+                      <div className="ml-2 flex-1 rounded bg-[#3a3a3a] px-2 py-0.5 text-[10px] text-[#888]">
+                        https://dashboard.example.com
+                      </div>
+                    </div>
+                  )}
+                  <PreviewErrorBoundary>
+                    <iframe
+                      title="Design preview"
+                      ref={mainIframeRef}
+                      sandbox="allow-scripts"
+                      srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                      className="border-0"
+                      style={{
+                        width: iframeWidth,
+                        height: platform === "dashboard" ? displayedIframeHeight - 34 : displayedIframeHeight,
+                        display: "block",
+                      }}
+                    />
+                  </PreviewErrorBoundary>
+                </>
               )}
-              <PreviewErrorBoundary>
-                <iframe
-                  title="Design preview"
-                  ref={mainIframeRef}
-                  sandbox="allow-same-origin allow-scripts"
-                  srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
-                  className="border-0"
-                  style={{
-                    width: iframeWidth,
-                    height: platform === "dashboard" ? displayedIframeHeight - 34 : displayedIframeHeight,
-                    display: "block",
-                  }}
-                />
-              </PreviewErrorBoundary>
             </div>
           )}
         </div>

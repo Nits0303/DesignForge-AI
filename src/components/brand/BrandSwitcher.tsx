@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronDown, Plus, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useBrandStore } from "@/store/useBrandStore";
+import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import type { BrandProfile } from "@/types/brand";
 
 const ACTIVE_BRAND_KEY = "df:active_brand_id";
@@ -19,8 +20,10 @@ function getInitials(name?: string | null) {
 export function BrandSwitcher() {
   const pathname = usePathname();
   const { brands, activeBrandId, setBrands, setActiveBrandId } = useBrandStore();
+  const setActiveBrandProfileId = useWorkspaceStore((s) => s.setActiveBrandProfileId);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     try {
@@ -35,7 +38,24 @@ export function BrandSwitcher() {
       if (activeBrandId) localStorage.setItem(ACTIVE_BRAND_KEY, activeBrandId);
       else localStorage.removeItem(ACTIVE_BRAND_KEY);
     } catch {}
-  }, [activeBrandId]);
+    setActiveBrandProfileId(activeBrandId);
+  }, [activeBrandId, setActiveBrandProfileId]);
+
+  async function makeBrandActive(brandId: string) {
+    setActiveBrandId(brandId);
+    setActiveBrandProfileId(brandId);
+    setBrands(
+      brands.map((b) => ({
+        ...b,
+        isDefault: b.id === brandId,
+      }))
+    );
+    try {
+      await fetch(`/api/brands/${brandId}/set-default`, { method: "PUT" });
+    } catch {
+      // best effort; local state is still updated
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -48,7 +68,9 @@ export function BrandSwitcher() {
           setBrands(json.data);
           if (!activeBrandId && json.data?.length) {
             const def = (json.data as BrandProfile[]).find((b) => b.isDefault);
-            setActiveBrandId(def?.id ?? json.data[0].id);
+            const chosen = def?.id ?? json.data[0].id;
+            setActiveBrandId(chosen);
+            setActiveBrandProfileId(chosen);
           }
         }
       } finally {
@@ -61,14 +83,38 @@ export function BrandSwitcher() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Close dropdown on outside click / Escape.
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(e: PointerEvent) {
+      const root = rootRef.current;
+      if (!root) return;
+      const target = e.target;
+      if (target instanceof Node && !root.contains(target)) setOpen(false);
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setOpen(false);
+    }
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   const active = useMemo(
     () => brands.find((b) => b.id === activeBrandId) ?? brands.find((b) => b.isDefault) ?? brands[0],
     [brands, activeBrandId]
   );
 
   return (
-    <div className="relative">
+    <div id="brand-switcher" ref={rootRef} className="relative">
       <button
+        id="brand-switcher-btn"
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-2 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-3 py-2 text-sm hover:bg-[hsl(var(--surface-elevated))]/80"
@@ -104,7 +150,7 @@ export function BrandSwitcher() {
                   key={b.id}
                   type="button"
                   onClick={() => {
-                    setActiveBrandId(b.id);
+                    void makeBrandActive(b.id);
                     setOpen(false);
                   }}
                   className={`w-full rounded-[var(--radius)] px-3 py-2 text-left text-sm transition-colors ${

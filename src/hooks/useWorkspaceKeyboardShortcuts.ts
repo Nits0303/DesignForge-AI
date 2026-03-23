@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useUIStore } from "@/store/useUIStore";
+import { getFirstVisibleElementByIds } from "@/lib/dom/visibleElement";
 
 type Shortcut = {
   keys: string;
@@ -58,7 +59,7 @@ export function useWorkspaceKeyboardShortcuts() {
       // ── Cmd+Enter: Generate from anywhere ─────────────────────────────────
       if (isCmd && key === "Enter") {
         e.preventDefault();
-        const btn = document.getElementById("generate-btn") as HTMLButtonElement | null;
+        const btn = getFirstVisibleElementByIds(["generate-btn", "generate-btn-mobile"]) as HTMLButtonElement | null;
         btn?.click();
         return;
       }
@@ -66,8 +67,14 @@ export function useWorkspaceKeyboardShortcuts() {
       // ── Cmd+K: focus prompt ────────────────────────────────────────────────
       if (isCmd && key.toLowerCase() === "k") {
         e.preventDefault();
-        const ta = document.getElementById("prompt-textarea") as HTMLTextAreaElement | null;
-        if (ta) { ta.focus(); ta.select(); }
+        const ta = getFirstVisibleElementByIds([
+          "workspace-prompt-input",
+          "workspace-prompt-input-mobile",
+        ]) as HTMLTextAreaElement | null;
+        if (ta) {
+          ta.focus();
+          ta.select();
+        }
         return;
       }
 
@@ -103,7 +110,10 @@ export function useWorkspaceKeyboardShortcuts() {
       if (isCmd && key.toLowerCase() === "r") {
         e.preventDefault();
         if (window.confirm("Regenerate this design from scratch?")) {
-          const btn = document.getElementById("regenerate-btn") as HTMLButtonElement | null;
+          const btn = getFirstVisibleElementByIds([
+            "regenerate-btn",
+            "regenerate-btn-mobile",
+          ]) as HTMLButtonElement | null;
           btn?.click();
         }
         return;

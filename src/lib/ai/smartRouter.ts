@@ -2,7 +2,7 @@ import type { ParsedIntent } from "@/types/ai";
 import type { Platform } from "@/types/design";
 import { PLATFORM_SPECS } from "@/constants/platforms";
 import { AI_MODELS } from "@/constants/models";
-import { anthropic, callAnthropicWithRetry } from "@/lib/ai/anthropicClient";
+import { callAnthropicWithRetry } from "@/lib/ai/anthropicClient";
 import { PROMPTS } from "@/lib/ai/prompts";
 
 type SmartRouterParams = {
@@ -49,12 +49,12 @@ export async function smartRouteIntent({
     PLATFORM_SPECS[initialPlatform].defaultDimensions[initialFormat] ??
     Object.values(PLATFORM_SPECS[initialPlatform].defaultDimensions)[0];
 
-  const messages: Parameters<typeof anthropic.messages.create>[0]["messages"] = [
+  const messages = [
     {
-      role: "user",
+      role: "user" as const,
       content: [
         {
-          type: "text",
+          type: "text" as const,
           text: `User prompt:\n${prompt}\n\nExisting hints:\n${JSON.stringify(partialIntent)}`,
         },
       ],
@@ -97,6 +97,23 @@ export async function smartRouteIntent({
 
   const dimsFromParsed = parsedAny?.dimensions ?? partialIntent.dimensions ?? defaultDims;
 
+  const screenPlanFromParsed = Array.isArray(parsedAny?.screenPlan)
+    ? (parsedAny.screenPlan as any[])
+        .filter(Boolean)
+        .map((s: any, idx: number) => ({
+          screenIndex: typeof s.screenIndex === "number" ? s.screenIndex : idx,
+          screenType: String(s.screenType ?? "screen"),
+          screenTitle: String(s.screenTitle ?? ""),
+          primaryAction: String(s.primaryAction ?? "Next"),
+          navigationPattern:
+            s.navigationPattern === "swipe" ||
+            s.navigationPattern === "tab" ||
+            s.navigationPattern === "back_button"
+              ? s.navigationPattern
+              : ("next_button" as const),
+        }))
+    : partialIntent.screenPlan;
+
   const merged: ParsedIntent = {
     platform: resolvedPlatform,
     format: resolvedFormat,
@@ -109,6 +126,10 @@ export async function smartRouteIntent({
       parsed?.screenCount && parsed.screenCount > 0
         ? Math.min(parsed.screenCount, 10)
         : partialIntent.screenCount,
+    screenPlan: screenPlanFromParsed,
+    appOS: (parsedAny?.appOS ?? partialIntent.appOS) as ParsedIntent["appOS"],
+    appCategory: (parsedAny?.appCategory ?? partialIntent.appCategory) as ParsedIntent["appCategory"],
+    appTheme: (parsedAny?.appTheme ?? partialIntent.appTheme) as ParsedIntent["appTheme"],
     styleContext: parsed?.styleContext ?? partialIntent.styleContext ?? [],
     contentRequirements: parsed?.contentRequirements ?? partialIntent.contentRequirements ?? [],
     requiresImageGeneration:

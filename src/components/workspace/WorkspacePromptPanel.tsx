@@ -1,9 +1,9 @@
 "use client";
 
 import { useMemo, useRef, useState, useEffect } from "react";
-import { CheckCircle2, ChevronDown } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { CheckCircle2, ChevronDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { BrandSwitcher } from "@/components/brand/BrandSwitcher";
 import { TemplateBrowser } from "@/components/workspace/TemplateBrowser";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useDesignGeneration } from "@/hooks/useDesignGeneration";
@@ -11,6 +11,12 @@ import { ShortcodeAutocomplete } from "@/components/workspace/ShortcodeAutocompl
 import { DEFAULT_SECTION_PLANS } from "@/constants/sectionDefaults";
 import type { ActiveReference } from "@/store/useWorkspaceStore";
 import { useUIStore } from "@/store/useUIStore";
+import { useBrandStore } from "@/store/useBrandStore";
+import {
+  brandSwatchesInSemanticOrder,
+  FALLBACK_BRAND_SWATCHES,
+} from "@/lib/brand/colorSwatches";
+import { DEFERRED_PROJECT_IDLE_MS } from "@/constants/deferredProjectAttach";
 
 const MAX_PROMPT_CHARS = 2000;
 const SHORTCODES = [
@@ -26,12 +32,23 @@ const SHORTCODES = [
 export function WorkspacePromptPanel({
   prompt,
   setPrompt,
+  layout = "desktop",
 }: {
   prompt: string;
   setPrompt: (p: string) => void;
+  /** Mobile sheet duplicates this panel; use distinct ids to avoid duplicate id violations. */
+  layout?: "desktop" | "mobile";
 }) {
+  const idSuf = layout === "mobile" ? "-mobile" : "";
+  const searchParams = useSearchParams();
+  const urlProjectId = searchParams.get("projectId");
+
   const enqueueToast = useUIStore((s) => s.enqueueToast);
   const { startGeneration } = useDesignGeneration();
+  const deferredProjectId = useWorkspaceStore((s) => s.deferredProjectId);
+  const deferredProjectName = useWorkspaceStore((s) => s.deferredProjectName);
+  const setDeferredProject = useWorkspaceStore((s) => s.setDeferredProject);
+  const clearDeferredProject = useWorkspaceStore((s) => s.clearDeferredProject);
   const generationState = useWorkspaceStore((s) => s.generationState);
   const lastMeta = useWorkspaceStore((s) => s.lastGenerationMeta);
   const activeBrandProfileId = useWorkspaceStore((s) => s.activeBrandProfileId);
@@ -43,6 +60,7 @@ export function WorkspacePromptPanel({
   const removeActiveReference = useWorkspaceStore((s) => s.removeActiveReference);
   const updateReferenceAnalysis = useWorkspaceStore((s) => s.updateReferenceAnalysis);
   const setScrollToSectionType = useWorkspaceStore((s) => s.setScrollToSectionType);
+  const brands = useBrandStore((s) => s.brands);
 
   const [showTemplateBrowser, setShowTemplateBrowser] = useState(false);
   const [showReference, setShowReference] = useState(false);
@@ -61,6 +79,34 @@ export function WorkspacePromptPanel({
   const [editingPlan, setEditingPlan] = useState(false);
   const [draftPlan, setDraftPlan] = useState<string[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
+  const [showProjectOptions, setShowProjectOptions] = useState(false);
+
+  const idleHuman =
+    DEFERRED_PROJECT_IDLE_MS < 120_000
+      ? `${Math.round(DEFERRED_PROJECT_IDLE_MS / 1000)} seconds`
+      : `${Math.max(1, Math.round(DEFERRED_PROJECT_IDLE_MS / 60000))} minutes`;
+
+  useEffect(() => {
+    if (urlProjectId) clearDeferredProject();
+  }, [urlProjectId, clearDeferredProject]);
+
+  useEffect(() => {
+    void (async () => {
+      const res = await fetch("/api/projects");
+      const json = await res.json();
+      if (res.ok && json.success) {
+        const rows = (json.data ?? []) as Array<{ id: string; name: string }>;
+        setProjects(rows.map((p) => ({ id: p.id, name: p.name })));
+      }
+    })();
+  }, []);
+
+  const urlProjectLabel = useMemo(() => {
+    if (!urlProjectId) return null;
+    const p = projects.find((x) => x.id === urlProjectId);
+    return p?.name ?? "this project";
+  }, [urlProjectId, projects]);
 
   const remaining = MAX_PROMPT_CHARS - prompt.length;
   const isGenerating =
@@ -96,10 +142,15 @@ export function WorkspacePromptPanel({
     if (!editingPlan) setDraftPlan(currentSectionPlan);
   }, [showSectionPlanEditor, currentSectionPlan, editingPlan]);
 
-  const swatches = useMemo(
-    () => ["#6366f1", "#8b5cf6", "#a78bfa", "#0f172a", "#f8fafc"],
-    []
+  const activeBrand = useMemo(
+    () => brands.find((b) => b.id === activeBrandProfileId) ?? brands.find((b) => b.isDefault) ?? null,
+    [brands, activeBrandProfileId]
   );
+  const swatches = useMemo(() => {
+    if (!activeBrand?.colors) return FALLBACK_BRAND_SWATCHES;
+    const list = brandSwatchesInSemanticOrder(activeBrand.colors as Record<string, unknown>);
+    return list.length ? list : FALLBACK_BRAND_SWATCHES;
+  }, [activeBrand]);
 
   // Persist reference image per brand in localStorage
   useEffect(() => {
@@ -244,7 +295,10 @@ export function WorkspacePromptPanel({
   }
 
   return (
-    <div className="relative border-r border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-4 overflow-y-auto">
+    <div
+      id={`workspace-prompt-panel${idSuf}`}
+      className="relative border-r border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-4 overflow-y-auto"
+    >
       <div className="space-y-4">
         <div>
           <h2 className="text-base font-semibold">Generate Design</h2>
@@ -254,6 +308,7 @@ export function WorkspacePromptPanel({
         </div>
 
         <ShortcodeAutocomplete
+          textareaId={`workspace-prompt-input${idSuf}`}
           value={prompt}
           onChange={(val) => setPrompt(val.slice(0, MAX_PROMPT_CHARS))}
         />
@@ -285,12 +340,14 @@ export function WorkspacePromptPanel({
         </div>
 
         <Button
+          id={`generate-btn${idSuf}`}
           className="w-full"
           disabled={isGenerating || !prompt.trim() || !activeBrandProfileId}
           onClick={() =>
             startGeneration({
               prompt,
               brandId: activeBrandProfileId || "",
+              projectId: urlProjectId || undefined,
               referenceImageUrl: referenceImageUrl ?? undefined,
               referenceIds: activeReferences.filter((r) => r.applying).map((r) => r.referenceId),
               referenceRoles: roleMap,
@@ -301,21 +358,90 @@ export function WorkspacePromptPanel({
           {isGenerating ? "Generating..." : "Generate"}
         </Button>
 
+        {urlProjectId ? (
+          <div className="rounded-[var(--radius)] border border-[hsl(var(--accent))]/40 bg-[hsl(var(--accent-muted))]/30 px-3 py-2 text-xs text-[hsl(var(--foreground))]">
+            <span className="font-medium">Project:</span> New designs are saved to{" "}
+            <span className="font-semibold">{urlProjectLabel ?? "…"}</span> as soon as they are created.
+          </div>
+        ) : null}
+
+        <div className="rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))]">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm"
+            onClick={() => setShowProjectOptions((v) => !v)}
+          >
+            <span>Add to existing project (optional)</span>
+            <ChevronDown className={`h-4 w-4 transition ${showProjectOptions ? "rotate-180" : ""}`} />
+          </button>
+          {showProjectOptions ? (
+            <div className="space-y-2 border-t border-[hsl(var(--border))] p-3 text-xs">
+              {urlProjectId ? (
+                <p className="text-[hsl(var(--muted-foreground))]">
+                  Deferred assignment is disabled while you opened the workspace from a project link — designs are already
+                  saved to that project on create.
+                </p>
+              ) : (
+                <>
+                  <p className="text-[hsl(var(--muted-foreground))]">
+                    After your last generation or revision has finished, stay idle for about{" "}
+                    <span className="font-medium text-[hsl(var(--foreground))]">{idleHuman}</span> with no new edits. The
+                    design is then added to the project you pick below (and still appears in My Designs).
+                  </p>
+                  <label
+                    className="block text-[hsl(var(--muted-foreground))]"
+                    htmlFor={`workspace-deferred-project${idSuf}`}
+                  >
+                    Project
+                  </label>
+                  <select
+                    id={`workspace-deferred-project${idSuf}`}
+                    className="w-full rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2 py-2 text-sm"
+                    value={deferredProjectId ?? ""}
+                    disabled={!projects.length}
+                    onChange={(e) => {
+                      const id = e.target.value || null;
+                      const row = projects.find((p) => p.id === id);
+                      setDeferredProject(id, row?.name ?? null);
+                    }}
+                  >
+                    <option value="">None — do not auto-assign</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {deferredProjectId ? (
+                    <p className="text-[hsl(var(--muted-foreground))]">
+                      Active: <span className="font-medium text-[hsl(var(--foreground))]">{deferredProjectName}</span>
+                    </p>
+                  ) : null}
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
+
         <div className="rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-3">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-[hsl(var(--muted-foreground))]">
               Brand profile
             </span>
           </div>
-          <div className="mt-2">
-            <BrandSwitcher />
+          <div className="mt-2 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))] px-3 py-2 text-sm">
+            <div className="font-semibold">{activeBrand?.name ?? "No active brand selected"}</div>
+            <div className="text-xs text-[hsl(var(--muted-foreground))]">
+              {activeBrand?.industry ? `Industry: ${activeBrand.industry}` : "Use the top brand switcher to change active brand"}
+            </div>
           </div>
           <div className="mt-2 flex gap-1.5">
-            {swatches.map((c) => (
+            {swatches.map((sw) => (
               <span
-                key={c}
+                key={sw.role}
                 className="h-3 w-3 rounded-full border border-[hsl(var(--border))]"
-                style={{ backgroundColor: c }}
+                style={{ backgroundColor: sw.value }}
+                title={`${sw.role}: ${sw.value}`}
               />
             ))}
           </div>
@@ -543,9 +669,22 @@ export function WorkspacePromptPanel({
                         <div className="space-y-1">
                           <div className="text-[10px] text-[hsl(var(--muted-foreground))]">Detected in reference</div>
                           <div className="flex gap-1">
-                            {[ref.analysis.colorPalette.dominant, ref.analysis.colorPalette.background, ref.analysis.colorPalette.text, ref.analysis.colorPalette.accent].map((c, idx) => (
-                              <span key={`${c}-${idx}`} className="h-4 w-4 rounded border border-[hsl(var(--border))]" style={{ backgroundColor: c }} />
-                            ))}
+                            {(
+                              [
+                                ["dominant", ref.analysis.colorPalette.dominant],
+                                ["background", ref.analysis.colorPalette.background],
+                                ["text", ref.analysis.colorPalette.text],
+                                ["accent", ref.analysis.colorPalette.accent],
+                              ] as const
+                            )
+                              .filter(([, c]) => Boolean(c))
+                              .map(([role, c]) => (
+                                <span
+                                  key={`${ref.referenceId}-${role}`}
+                                  className="h-4 w-4 rounded border border-[hsl(var(--border))]"
+                                  style={{ backgroundColor: c }}
+                                />
+                              ))}
                           </div>
                         </div>
                       ) : null}
@@ -664,7 +803,12 @@ export function WorkspacePromptPanel({
           ) : null}
         </div>
 
-        <Button variant="secondary" className="w-full" onClick={() => setShowTemplateBrowser((v) => !v)}>
+        <Button
+          id={`template-browser-btn${idSuf}`}
+          variant="secondary"
+          className="w-full"
+          onClick={() => setShowTemplateBrowser((v) => !v)}
+        >
           {showTemplateBrowser ? "Hide template browser" : "Show template browser"}
         </Button>
 
@@ -842,8 +986,31 @@ export function WorkspacePromptPanel({
       </div>
 
       {showTemplateBrowser ? (
-        <div className="absolute inset-y-0 right-0 w-[92%] border-l border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
-          <TemplateBrowser />
+        <div className="absolute inset-y-0 right-0 left-0 z-[50]">
+          {/* Clicking in any non-functional space closes the overlay */}
+          <div
+            className="absolute inset-0"
+            onClick={() => setShowTemplateBrowser(false)}
+            aria-hidden
+          />
+
+          <div
+            className="absolute inset-y-0 right-0 w-[92%] border-l border-[hsl(var(--border))] bg-[hsl(var(--surface))]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="absolute right-2 top-2 z-[60] h-8 w-8 p-0"
+              onClick={() => setShowTemplateBrowser(false)}
+              aria-label="Close template browser"
+              title="Close"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+            <TemplateBrowser />
+          </div>
         </div>
       ) : null}
     </div>

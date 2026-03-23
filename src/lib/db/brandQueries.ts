@@ -36,6 +36,7 @@ export async function getUserBrands(userId: string, includeAssets = false) {
   const cached = await redis.get(key);
   if (cached) return JSON.parse(cached);
 
+  /* PERFORMANCE: list brands + optional assets — hot path for workspace; index on BrandProfile(userId) and consider limiting assets join. */
   const brands = await prisma.brandProfile.findMany({
     where: { userId },
     orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],

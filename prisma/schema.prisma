@@ -34,6 +34,22 @@ enum BatchJobStatus {
   completed
   failed
   partial
+  cancelled
+}
+
+enum BatchProcessingStrategy {
+  anthropic_batch
+  sequential
+  parallel
+}
+
+enum BatchItemStatus {
+  pending
+  generating
+  complete
+  failed
+  approved
+  revision_requested
 }
 
 enum ExportFormat {
@@ -53,6 +69,77 @@ enum ExportJobStatus {
   failed
 }
 
+// Sprint 17 — Template Marketplace
+enum TemplateSubmissionStatus {
+  draft
+  submitted
+  under_review
+  approved
+  rejected
+  deprecated
+}
+
+enum TemplateLicenseType {
+  mit
+  cc_by
+  cc_by_nc
+  proprietary
+}
+
+enum TemplateReportType {
+  inappropriate_content
+  copyright_violation
+  broken_template
+  spam
+  other
+}
+
+enum TemplateReportStatus {
+  pending
+  reviewed
+  resolved
+  dismissed
+}
+
+// Sprint 18 — External API & Teams
+enum ApiKeyStatus {
+  active
+  revoked
+  expired
+}
+
+enum ApiRateLimitTier {
+  standard
+  elevated
+  unlimited
+}
+
+enum TeamPlan {
+  free
+  team
+  enterprise
+}
+
+enum TeamMemberRole {
+  owner
+  admin
+  editor
+  viewer
+}
+
+enum ApiGenerationJobStatus {
+  queued
+  processing
+  complete
+  failed
+}
+
+enum DesignApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
 model User {
   id           String        @id @default(cuid())
   email        String        @unique
@@ -65,6 +152,7 @@ model User {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   lastLoginAt  DateTime?
+  firstPreferenceInferredAt DateTime?
 
   sessions     Session[]
   accounts     Account[]
@@ -75,7 +163,35 @@ model User {
   preferences  UserPreference[]
   revisionPatterns RevisionPattern[]
   batchJobs    BatchJob[]
+  notifications Notification[]
   referenceImages ReferenceImage[]
+  qualityMetrics UserQualityMetric[]
+  pluginTokens   PluginToken[]
+  pluginFeedback PluginFeedback[]
+  createdAbTests PromptABTest[] @relation("AbTestsCreated")
+  promotionLogs  PromotionLog[]
+  webhookConfigs WebhookConfig[]
+
+  contributorReputation Int     @default(0)
+  contributorTrusted    Boolean @default(false)
+  templateContributions Template[]           @relation("TemplateContributor")
+  templatesReviewed     Template[]           @relation("TemplateReviewedBy")
+  templatesReviewing    Template[]           @relation("TemplateReviewingAdmin")
+  templateInstallations TemplateInstallation[]
+  templateRatingsGiven  TemplateRating[]
+  templateCollectionsCreated TemplateCollection[]
+  templateReportsFiled  TemplateReport[]     @relation("TemplateReportReporter")
+
+  apiKeys               ApiKey[]
+  apiUsageLogs          ApiUsageLog[]
+  teamMemberships       TeamMember[]
+  teamMemberInvites     TeamMember[]         @relation("TeamMemberInvitedBy")
+  ownedTeams            Team[]               @relation("TeamOwner")
+  teamInvitationsSent   TeamInvitation[]     @relation("TeamInvitationInviter")
+  teamInviteLinksCreated TeamInviteLink[]    @relation("TeamInviteLinkCreator")
+  designsApproved       Design[]             @relation("DesignApprovedBy")
+  activityLogs          ActivityLog[]
+  apiGenerationJobs     ApiGenerationJob[]
 }
 
 model Session {
@@ -118,6 +234,7 @@ model VerificationToken {
 model BrandProfile {
   id             String       @id @default(cuid())
   userId         String
+  teamId         String?
   name           String
   logoPrimaryUrl String?
   logoIconUrl    String?
@@ -132,10 +249,13 @@ model BrandProfile {
   updatedAt      DateTime     @updatedAt
 
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team           Team?        @relation(fields: [teamId], references: [id], onDelete: SetNull)
   assets         BrandAsset[]
   designs        Design[]
   generationLogs GenerationLog[]
   batchJobs      BatchJob[]
+
+  @@index([teamId])
 }
 
 model BrandAsset {
@@ -154,18 +274,23 @@ model BrandAsset {
 model Project {
   id          String    @id @default(cuid())
   userId      String
+  teamId      String?
   name        String
   description String?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team        Team?     @relation(fields: [teamId], references: [id], onDelete: SetNull)
   designs     Design[]
+
+  @@index([teamId])
 }
 
 model Design {
   id             String        @id @default(cuid())
   userId         String
+  teamId         String?
   brandId        String?
   projectId      String?
   title          String
@@ -183,19 +308,30 @@ model Design {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
+  approvalStatus        DesignApprovalStatus?
+  approvalRequestedAt    DateTime?
+  approvedByUserId       String?
+  approvalNotes          Json?
+  personalBrandInTeam    Boolean @default(false)
 
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team           Team?         @relation(fields: [teamId], references: [id], onDelete: SetNull)
   brand          BrandProfile? @relation(fields: [brandId], references: [id])
   project        Project?      @relation(fields: [projectId], references: [id])
+  approvedBy     User?         @relation("DesignApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
   versions       DesignVersion[]
   assets         DesignAsset[]
   generationLogs GenerationLog[]
+  batchItems     BatchItem[]
   exports        Export[]
   shareLinks     ShareLink[]
   exportJobs     ExportJob[]
+  templateRatings TemplateRating[]
 
   @@index([userId, createdAt])
   @@index([userId, platform])
+  @@index([teamId])
+  @@index([approvalStatus])
 }
 
 model ReferenceImage {
@@ -222,6 +358,9 @@ model DesignVersion {
   designId         String
   versionNumber    Int
   htmlContent      String
+  /** When true, htmlContent is a JSON-serialised string[] of per-screen HTML documents (mobile flows). */
+  isMultiScreen    Boolean  @default(false)
+  screenCount      Int?
   revisionPrompt   String?
   aiModelUsed      String?
   promptTokens     Int?
@@ -251,21 +390,129 @@ model DesignAsset {
 
 model Template {
   id              String   @id @default(cuid())
+  teamId          String?
   name            String
   tier            String
   category        String
   platform        String
+  format          String   @default("all")
   htmlSnippet     String
   previewUrl      String?
   tags            String[]
   source          String?
   usageCount      Int      @default(0)
-  avgApprovalRate Float?   @default(0)
+  avgApprovalRate Float?   @default(0.5)
   isActive        Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
+  contributorUserId String?
+  submissionStatus  TemplateSubmissionStatus @default(approved)
+  submissionNotes   String?  @db.Text
+  reviewNotes       String?  @db.Text
+  reviewedByUserId  String?
+  reviewedAt        DateTime?
+  reviewingAdminUserId String?
+  /** Set when an admin opens the review; used to reset stale under_review after 2h. */
+  reviewClaimedAt   DateTime?
+  isMarketplaceFeatured Boolean @default(false)
+  featuredUntil     DateTime?
+  installCount      Int      @default(0)
+  marketplaceDescription String? @db.Text
+  previewImages     Json?
+  templateVersion   String   @default("1.0") @map("version")
+  licenseType       TemplateLicenseType @default(mit)
+  avgMarketplaceRating Float?
+  marketplaceRatingCount Int @default(0)
+  marketplaceQualityFlagged Boolean @default(false)
+  externalImageFlagged Boolean @default(false)
+  renderCheckFailed Boolean @default(false)
+  similarityFlagged Boolean @default(false)
+  similarToTemplateId String?
+
+  team           Team?  @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  contributor    User? @relation("TemplateContributor", fields: [contributorUserId], references: [id], onDelete: SetNull)
+  reviewedBy     User? @relation("TemplateReviewedBy", fields: [reviewedByUserId], references: [id], onDelete: SetNull)
+  reviewingAdmin User? @relation("TemplateReviewingAdmin", fields: [reviewingAdminUserId], references: [id], onDelete: SetNull)
+
+  installations TemplateInstallation[]
+  ratings       TemplateRating[]
+  reports       TemplateReport[]
+
   @@index([platform, category, isActive])
+  @@index([contributorUserId])
+  @@index([submissionStatus, createdAt])
+  @@index([teamId])
+}
+
+model TemplateInstallation {
+  id         String   @id @default(cuid())
+  userId     String
+  templateId String
+  installedAt DateTime @default(now())
+  isActive   Boolean  @default(true)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, templateId])
+  @@index([userId])
+  @@index([templateId])
+}
+
+model TemplateRating {
+  id           String   @id @default(cuid())
+  userId       String
+  templateId   String
+  rating       Int
+  reviewText   String?  @db.VarChar(500)
+  generationId String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  template Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  design   Design?  @relation(fields: [generationId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, templateId])
+  @@index([templateId, rating])
+}
+
+model TemplateCollection {
+  id               String   @id @default(cuid())
+  teamId           String?
+  name             String
+  description      String   @db.Text
+  coverImageUrl    String?
+  templateIds      Json
+  isPublic         Boolean  @default(true)
+  isAutoGenerated  Boolean  @default(false)
+  autoKey          String?  @unique
+  createdByUserId  String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  team      Team? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  createdBy User @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([isPublic, createdAt])
+  @@index([teamId])
+}
+
+model TemplateReport {
+  id               String             @id @default(cuid())
+  templateId       String
+  reportedByUserId String
+  reportType       TemplateReportType
+  description      String             @db.Text
+  status           TemplateReportStatus @default(pending)
+  createdAt        DateTime           @default(now())
+
+  template   Template @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  reportedBy User     @relation("TemplateReportReporter", fields: [reportedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@index([status, createdAt])
 }
 
 model DesignPattern {
@@ -283,13 +530,18 @@ model GenerationLog {
   id                String   @id @default(cuid())
   designId          String?
   userId            String?
+  batchJobId        String?
   fullPromptHash    String
   systemPromptVersion String
+  promptStructureHash String?
+  platform          String?
+  format            String?
   templateIdsUsed   String[]
   brandId           String?
   model             String
   totalTokens       Int?
   costUsd           Float?
+  estimatedCostUsd  Float?
   // Section generation analytics (for website/dashboard multi-section streaming).
   sectionCount      Int?
   sectionPlan       Json?
@@ -299,13 +551,20 @@ model GenerationLog {
   revisionCount     Int      @default(0)
   wasApproved       Boolean?
   sessionDurationMs Int?
+  generationTimeMs  Int?
+  testVariantId     String?
+  /** [{ "testId": "...", "variantId": "..." }, ...] — Sprint 16 multi-test assignments */
+  testAssignments   Json?
   createdAt         DateTime @default(now())
 
   design            Design?       @relation(fields: [designId], references: [id])
   user              User?         @relation(fields: [userId], references: [id])
   brand             BrandProfile? @relation(fields: [brandId], references: [id])
+  batchJob          BatchJob?    @relation(fields: [batchJobId], references: [id])
 
   @@index([userId, createdAt])
+  @@index([promptStructureHash])
+  @@index([batchJobId])
 }
 
 model UserPreference {
@@ -315,6 +574,7 @@ model UserPreference {
   preferenceValue Json
   confidence     Float?   @default(0)
   sampleCount    Int      @default(0)
+  manualOverride Boolean  @default(false)
   updatedAt      DateTime @updatedAt
 
   user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -324,42 +584,336 @@ model UserPreference {
 
 model RevisionPattern {
   id           String   @id @default(cuid())
-  userId       String
+  userId       String?
   patternType  String
   patternDetail Json
   frequency    Int      @default(0)
   lastSeenAt   DateTime @default(now())
+  designId     String?
+  isAggregated Boolean  @default(false)
 
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model PromptScore {
   id                String   @id @default(cuid())
-  promptStructureHash String
+  promptStructureHash String @unique
   platform          String
   format            String
-  score             Float    @default(0)
+  score             Float    @default(0.5)
   totalUses         Int      @default(0)
-  zeroRevisionRate  Float?   @default(0)
+  zeroRevisionRate  Float?   @default(0.5)
   avgRevisions      Float?   @default(0)
   updatedAt         DateTime @updatedAt
 
   @@index([platform, format])
 }
 
+enum LearningBatchStatus {
+  success
+  failed
+  partial
+}
+
+enum TemplateRecommendationStatus {
+  pending
+  applied
+  dismissed
+}
+
+model LearningBatchLog {
+  id                String              @id @default(cuid())
+  runDate           DateTime            @db.Date
+  jobName           String
+  status            LearningBatchStatus
+  recordsProcessed Int
+  recordsUpdated   Int
+  durationMs        Int
+  errorMessage     String?
+  auditDetails     Json?
+  createdAt         DateTime           @default(now())
+
+  @@index([runDate, jobName])
+}
+
+model TemplateRecommendation {
+  id                   String @id @default(cuid())
+  patternType          String
+  platform             String
+  affectedTemplateIds String[]
+  frequency            Float?
+  recommendation       String
+  status               TemplateRecommendationStatus @default(pending)
+  createdAt            DateTime @default(now())
+
+  @@index([platform, patternType])
+}
+
+model UserQualityMetric {
+  id                String   @id @default(cuid())
+  userId            String
+  date              DateTime @db.Date
+  designQualityScore Float @default(0)
+  avgRevisions      Float
+  zeroRevisionRate  Float
+  designCount       Int
+  activePreferences Int
+  createdAt         DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
+  @@unique([userId, date])
+}
+
+enum PromptABTestStatus {
+  draft
+  running
+  paused
+  completed
+  cancelled
+}
+
+model PromptABTest {
+  id                   String @id @default(cuid())
+  name                 String
+  description          String @default("")
+  platform             String
+  format               String
+  status               PromptABTestStatus @default(draft)
+  variants             Json
+  winnerVariantId      String?
+  winnerConfidence     Float?
+  startDate            DateTime @default(now())
+  endDate              DateTime?
+  minSamplesPerVariant Int @default(50)
+  significanceThreshold Float @default(0.05)
+  autoPromoteWinner    Boolean @default(false)
+  createdByUserId      String?
+  excludeNewUsers      Boolean @default(true)
+  holdbackPercent      Int @default(0)
+  significanceCheckCount Int @default(0)
+  minimumDetectableEffect Float?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  createdBy User? @relation("AbTestsCreated", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  abResults ABTestResult[]
+  promotions PromotionLog[]
+
+  @@index([platform, format, status])
+  @@index([status, platform, format])
+}
+
+model ABTestResult {
+  id                  String   @id @default(cuid())
+  testId              String
+  computedAt          DateTime @default(now())
+  variantResults      Json
+  significanceResult  Json?
+  recommendedWinner   String?
+  sampleSufficient      Boolean @default(false)
+  createdAt           DateTime @default(now())
+
+  test PromptABTest @relation(fields: [testId], references: [id], onDelete: Cascade)
+
+  @@index([testId, computedAt(sort: Desc)])
+}
+
+/** DB-registered system prompt snapshots (e.g. promoted A/B winners). Keys are valid for variant `systemPromptVersion`. */
+model DynamicPromptVersion {
+  id           String   @id @default(cuid())
+  versionKey   String   @unique
+  content      String   @db.Text
+  description  String   @default("")
+  sourceTestId String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+model SystemPromptDefault {
+  id                   String   @id @default(cuid())
+  platform             String
+  format               String
+  systemPromptVersion  String
+  updatedAt            DateTime @updatedAt
+
+  @@unique([platform, format])
+}
+
+model PlatformDefault {
+  id         String   @id @default(cuid())
+  platform   String
+  format     String
+  key        String
+  value      Json
+  updatedAt  DateTime @updatedAt
+
+  @@unique([platform, format, key])
+}
+
+model PromotionLog {
+  id                 String    @id @default(cuid())
+  testId             String
+  winnerVariantId    String
+  promotedAt         DateTime  @default(now())
+  promotedByUserId   String?
+  changeDescription  String
+  previousValue      Json?
+  newValue           Json?
+  revertedAt         DateTime?
+
+  test       PromptABTest @relation(fields: [testId], references: [id], onDelete: Cascade)
+  promotedBy User?        @relation(fields: [promotedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([testId, promotedAt])
+  @@index([promotedAt])
+}
+
+model ABTestSuggestion {
+  id                  String   @id @default(cuid())
+  suggestedTestConfig Json
+  rationale           String
+  expectedEffect      String?
+  priority            String   @default("medium")
+  status              String   @default("pending")
+  createdAt           DateTime @default(now())
+
+  @@index([status, createdAt])
+}
+
+model WebhookConfig {
+  id        String   @id @default(cuid())
+  userId    String
+  url       String
+  secret    String
+  events    Json
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries WebhookDeliveryLog[]
+
+  @@index([userId])
+}
+
+model WebhookDeliveryLog {
+  id              String   @id @default(cuid())
+  webhookConfigId String
+  event           String
+  payload         Json
+  success         Boolean
+  statusCode      Int?
+  errorMessage    String?
+  createdAt       DateTime @default(now())
+
+  config WebhookConfig @relation(fields: [webhookConfigId], references: [id], onDelete: Cascade)
+
+  @@index([webhookConfigId, createdAt])
+}
+
 model BatchJob {
   id            String          @id @default(cuid())
   userId        String
+  teamId        String?
   brandId       String?
+  name          String
   status        BatchJobStatus  @default(pending)
+  processingStrategy BatchProcessingStrategy @default(sequential)
   totalItems    Int
   completedItems Int            @default(0)
+  failedItems   Int            @default(0)
   inputData     Json
+  estimatedCostUsd Float?
+  actualCostUsd Float?
+  startedAt     DateTime?
   createdAt     DateTime        @default(now())
   completedAt   DateTime?
+  batchMetrics  Json?
+  updatedAt     DateTime        @updatedAt
+
+  items          BatchItem[]
+  generationLogs GenerationLog[]
 
   user          User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team          Team?           @relation(fields: [teamId], references: [id], onDelete: SetNull)
   brand         BrandProfile?   @relation(fields: [brandId], references: [id])
+
+  @@index([userId, status])
+  @@index([teamId])
+}
+
+model BatchItem {
+  id                     String            @id @default(cuid())
+  batchJobId             String
+  designId               String?
+  itemIndex              Int
+  topic                  String
+  date                   String
+  platform               String
+  format                 String
+  notes                  String?
+  referenceImageUrl     String?
+  status                 BatchItemStatus @default(pending)
+  errorMessage           String?
+  revisionPrompt         String?
+  anthropicBatchRequestId String?
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  batchJob                BatchJob         @relation(fields: [batchJobId], references: [id], onDelete: Cascade)
+  design                  Design?         @relation(fields: [designId], references: [id])
+
+  @@index([batchJobId, status])
+  @@index([batchJobId, itemIndex])
+  @@unique([batchJobId, itemIndex])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  isRead    Boolean  @default(false)
+  actionUrl String?
+  /** Structured payload (e.g. figma_push_ready: designId, shareToken). */
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead, createdAt])
+  @@index([userId, type, isRead])
+}
+
+/** Long-lived bearer tokens for the Figma plugin (hashed at rest). */
+model PluginToken {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  name       String   @default("Figma Plugin")
+  lastUsedAt DateTime?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/** Tailwind classes the plugin translator could not map (coverage roadmap). */
+model PluginFeedback {
+  id        String   @id @default(cuid())
+  userId    String
+  classes   String[]
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
 }
 
 model Export {
@@ -370,6 +924,9 @@ model Export {
   fileUrl       String
   figmaUrl      String?
   fileSizeBytes Int?
+  /** Figma file key when pushed via DesignForge plugin (for deep links). */
+  figmaFileKey  String?
+  figmaNodeId   String?
   createdAt     DateTime     @default(now())
 
   design        Design       @relation(fields: [designId], references: [id], onDelete: Cascade)
@@ -402,5 +959,200 @@ model ExportJob {
   design        Design          @relation(fields: [designId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
+}
+
+// --- Sprint 18 models ---
+
+model Team {
+  id           String     @id @default(uuid())
+  name         String
+  slug         String     @unique
+  logoUrl      String?
+  ownerUserId  String
+  plan         TeamPlan   @default(enterprise)
+  settings     Json?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  owner        User       @relation("TeamOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  members      TeamMember[]
+  invitations  TeamInvitation[]
+  inviteLinks  TeamInviteLink[]
+  designs      Design[]
+  brands       BrandProfile[]
+  projects     Project[]
+  batchJobs    BatchJob[]
+  templates    Template[]
+  templateCollections TemplateCollection[]
+  activityLogs ActivityLog[]
+  apiKeys      ApiKey[]
+}
+
+model TeamMember {
+  id                String         @id @default(uuid())
+  teamId            String
+  userId            String
+  role              TeamMemberRole
+  joinedAt          DateTime       @default(now())
+  invitedByUserId String?
+
+  team     Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user     User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User? @relation("TeamMemberInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+model TeamInvitation {
+  id                String         @id @default(uuid())
+  teamId            String
+  email             String
+  role              TeamMemberRole
+  tokenHash         String         @unique
+  invitedByUserId   String
+  expiresAt         DateTime
+  acceptedAt        DateTime?
+  createdAt         DateTime       @default(now())
+
+  team      Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  invitedBy User @relation("TeamInvitationInviter", fields: [invitedByUserId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, email])
+}
+
+model TeamInviteLink {
+  id              String         @id @default(uuid())
+  teamId          String
+  tokenHash       String         @unique
+  role            TeamMemberRole
+  expiresAt       DateTime
+  createdByUserId String
+  createdAt       DateTime       @default(now())
+
+  team      Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdBy User @relation("TeamInviteLinkCreator", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+}
+
+model ApiKey {
+  id                       String           @id @default(uuid())
+  userId                   String
+  teamId                   String?
+  name                     String
+  keyPrefix                String
+  keyHash                  String           @unique
+  permissions              Json
+  status                   ApiKeyStatus     @default(active)
+  expiresAt                DateTime?
+  lastUsedAt               DateTime?
+  lastUsedIp               String?
+  rateLimitTier            ApiRateLimitTier @default(standard)
+  webhookUrl               String?
+  webhookSecret            String?
+  webhookBatchItemEvents   Boolean          @default(false)
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
+
+  user       User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team       Team? @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  usageLogs  ApiUsageLog[]
+  webhookAttempts WebhookDeliveryAttempt[]
+  generationJobs  ApiGenerationJob[]
+
+  @@index([keyPrefix])
+}
+
+model ApiGenerationJob {
+  id              String                 @id @default(cuid())
+  userId          String
+  apiKeyId        String?
+  status          ApiGenerationJobStatus @default(queued)
+  clientRequestId String?
+  input           Json
+  resultDesignId  String?
+  errorMessage    String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  completedAt     DateTime?
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey ApiKey? @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+model ApiUsageLog {
+  id              String   @id @default(uuid())
+  apiKeyId        String
+  userId          String
+  endpoint        String
+  method          String
+  statusCode      Int
+  requestTokens   Int?
+  responseTimeMs  Int
+  costUsd         Float?
+  requestId       String   @unique
+  ipAddress       String?
+  userAgent       String?
+  errorCode       String?
+  createdAt       DateTime @default(now())
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([apiKeyId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+}
+
+model WebhookDeliveryAttempt {
+  id              String   @id @default(uuid())
+  apiKeyId        String
+  event           String
+  requestPayload  Json
+  responseStatus  Int?
+  responseBody    String?  @db.VarChar(500)
+  attemptNumber   Int
+  deliveredAt     DateTime?
+  success         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([apiKeyId, createdAt])
+}
+
+model WhiteLabelConfig {
+  id              String   @id @default("default")
+  isEnabled       Boolean  @default(false)
+  appName         String   @default("DesignForge AI")
+  logoUrl         String?
+  faviconUrl      String?
+  primaryColor    String?
+  supportEmail    String?
+  privacyPolicyUrl String?
+  termsUrl        String?
+  hidePoweredBy   Boolean  @default(false)
+  customCss       Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ActivityLog {
+  id             String   @id @default(uuid())
+  teamId         String
+  userId         String
+  eventType      String
+  resourceId     String?
+  resourceTitle  String?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, createdAt(sort: Desc)])
 }
 

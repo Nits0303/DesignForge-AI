@@ -1,0 +1,26 @@
+{
+  "name": "@designforge/figma-plugin",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "webpack --config webpack.ui.js && webpack --config webpack.code.js && node ./scripts/copy-manifest.cjs",
+    "watch": "webpack --config webpack.ui.js --watch",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "node-html-parser": "^7.1.0",
+    "preact": "^10.24.3"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.109.0",
+    "@types/node": "^20",
+    "css-loader": "^7.1.2",
+    "html-webpack-plugin": "^5.6.3",
+    "style-loader": "^4.0.0",
+    "ts-loader": "^9.5.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.0",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^5.1.4"
+  }
+}

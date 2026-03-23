@@ -18,11 +18,12 @@ export async function GET() {
     monthStart.setHours(0, 0, 0, 0);
 
     const [monthCount, logs] = await Promise.all([
-      prisma.generationLog.count({
+      prisma.design.count({
         where: { userId, createdAt: { gte: monthStart } },
       }),
       prisma.generationLog.findMany({
-        where: { userId },
+        // `revisionCount` represents revisions before approval; only include decided/approved attempts.
+        where: { userId, wasApproved: { not: null }, design: { createdAt: { gte: monthStart } } },
         select: { revisionCount: true, design: { select: { platform: true } } },
         take: 1000,
         orderBy: { createdAt: "desc" },

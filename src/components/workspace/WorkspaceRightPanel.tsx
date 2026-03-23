@@ -106,6 +106,7 @@ export function WorkspaceRightPanel() {
     setActiveRevisionQueueId,
     lastGenerationMeta,
     setHoveredSectionType,
+    workspaceDesignSyncNonce,
   } = useWorkspaceStore((s) => s);
 
   const { enqueueToast } = useUIStore((s) => s);
@@ -133,7 +134,7 @@ export function WorkspaceRightPanel() {
       }
     })();
     return () => { mounted = false; };
-  }, [activeDesignId, activeVersionNumber, versionHistory.length]);
+  }, [activeDesignId, activeVersionNumber, versionHistory.length, workspaceDesignSyncNonce]);
 
   // ─── Scroll tracking ────────────────────────────────────────────────────
   const checkAtBottom = useCallback(() => {
@@ -380,7 +381,7 @@ export function WorkspaceRightPanel() {
 
   return (
     <Tooltip.Provider delayDuration={600}>
-      <div className="flex h-full flex-col bg-[hsl(var(--surface))]">
+      <div id="workspace-right-panel" className="flex h-full flex-col bg-[hsl(var(--surface))]">
         {/* Tab bar */}
         <div className="border-b border-[hsl(var(--border))] p-2">
           <div className="flex gap-2">

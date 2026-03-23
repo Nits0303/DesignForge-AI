@@ -25,6 +25,11 @@ type SseEvent =
   | { event: "image_complete"; data: { updatedHtml: string } }
   | { event: "section_start"; data: { sectionType: string; sectionIndex: number; totalSections: number } }
   | { event: "section_complete"; data: { sectionType: string; sectionIndex: number; sectionHtml: string; assembledHtml?: string } }
+  | {
+      event: "screen_start";
+      data: { screenIndex: number; screenType: string; screenTitle: string; totalScreens: number };
+    }
+  | { event: "screen_complete"; data: { screenIndex: number; screenType: string; screenHtml: string } }
   | { event: "complete"; data: any }
   | { event: "error"; data: { code: string; message: string; retryable: boolean } };
 
@@ -77,6 +82,25 @@ export async function POST(req: Request) {
         headers: { "Content-Type": "text/event-stream" },
       }
     );
+  }
+
+  if (projectId) {
+    const proj = await prisma.project.findFirst({
+      where: { id: projectId, userId },
+      select: { id: true },
+    });
+    if (!proj) {
+      return new Response(
+        encodeSse({
+          event: "error",
+          data: { code: "NOT_FOUND", message: "Project not found", retryable: false },
+        }),
+        {
+          status: 404,
+          headers: { "Content-Type": "text/event-stream" },
+        }
+      );
+    }
   }
 
   const rlKey = `generate:${userId}`;
@@ -164,6 +188,12 @@ export async function POST(req: Request) {
                   assembledHtml: p.assembledHtml,
                 },
               });
+            },
+            onScreenStart: async (p) => {
+              enqueue({ event: "screen_start", data: p });
+            },
+            onScreenComplete: async (p) => {
+              enqueue({ event: "screen_complete", data: p });
             },
           }
         );

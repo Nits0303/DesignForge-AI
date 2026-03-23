@@ -13,6 +13,8 @@ const hex = z
   .regex(/^#[0-9a-fA-F]{6}$/, "Color must be a 6-digit hex value (e.g. #112233)");
 
 const putSchema = z.object({
+  /** If set, update only when it matches current `updatedAt` (ISO string). */
+  expectedUpdatedAt: z.string().optional(),
   name: z.string().min(1).optional(),
   industry: z.string().nullish(),
   toneVoice: z.string().max(500).nullish(),
@@ -74,9 +76,19 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
 
     const existing = await prisma.brandProfile.findFirst({
       where: { id, userId: session.user.id },
-      select: { id: true, colors: true, typography: true },
+      select: { id: true, colors: true, typography: true, updatedAt: true },
     });
     if (!existing) return fail("NOT_FOUND", "Not found", 404);
+
+    if (parsed.data.expectedUpdatedAt) {
+      const expected = new Date(parsed.data.expectedUpdatedAt);
+      if (Number.isNaN(expected.getTime())) {
+        return fail("VALIDATION_ERROR", "expectedUpdatedAt must be a valid ISO date string.", 400);
+      }
+      if (existing.updatedAt.getTime() !== expected.getTime()) {
+        return fail("CONFLICT", "Brand was modified elsewhere. Refresh and try again.", 409);
+      }
+    }
 
     const nextColors = parsed.data.colors
       ? { ...(existing.colors as any), ...(parsed.data.colors as any) }

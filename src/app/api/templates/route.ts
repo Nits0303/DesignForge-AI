@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
       return ok(JSON.parse(cached));
     }
 
-    const where: any = { isActive: true };
+    const where: any = { isActive: true, submissionStatus: "approved" };
     if (tier) where.tier = tier;
     if (category) where.category = category;
     if (platform) where.platform = platform;

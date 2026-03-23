@@ -21,10 +21,10 @@ ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 WORKDIR /app
 
-COPY services/puppeteer/package.json ./
+COPY package.json ./
 RUN npm install --production
 
-COPY services/puppeteer/server.js ./
+COPY server.js ./
 
 EXPOSE 3000
 

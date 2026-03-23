@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import crypto from "crypto";
 import { parseShortcode, shortcodeToPartialIntent } from "@/lib/ai/shortcodeParser";
 import { smartRouteIntent } from "@/lib/ai/smartRouter";
 import { selectTemplatesForIntent } from "@/lib/ai/componentSelector";
@@ -6,20 +7,30 @@ import { assembleGenerationPrompt } from "@/lib/ai/promptAssembler";
 import { chooseModel } from "@/lib/ai/modelRouter";
 import { callAnthropicWithRetry } from "@/lib/ai/anthropicClient";
 import { anthropic } from "@/lib/ai/anthropicClient";
+import { isGeminiPrimaryLlm, streamGeminiGeneration } from "@/lib/ai/geminiClient";
 import { PROMPTS } from "@/lib/ai/prompts";
-import { AI_MODELS, AI_PRICING } from "@/constants/models";
+import { AI_MODELS, AI_PRICING, getPricingForModel } from "@/constants/models";
 import type { ParsedIntent } from "@/types/ai";
 import { postProcessHtml } from "@/lib/ai/htmlPostProcessor";
 import { assembleRevisionPrompt } from "@/lib/ai/revisionPromptAssembler";
 import { classifyRevision } from "@/lib/ai/revisionClassifier";
 import { enqueueExportJob } from "@/lib/export/enqueueExportJob";
 import { generateMultiSectionHtml } from "@/lib/ai/multiSectionGenerator";
+import { generateMobileFlowHtml, shouldUseMobileFlowGenerator } from "@/lib/ai/mobileFlowGenerator";
 import {
   detectTargetSectionType,
   extractSectionTypesFromHtml,
   reviseSectionTargeted,
 } from "@/lib/ai/sectionTargetedRevisor";
 import { getReferenceAnalysis } from "@/lib/ai/referenceAnalyzer";
+import { computePromptStructureHash } from "@/lib/learning/hashUtils";
+import {
+  resolveAbTestsForGeneration,
+  type MergedAbPromptContext,
+  type TestAssignmentEntry,
+} from "@/lib/ab/abTestAssignment";
+import { getCurrentDefaultVersionKey } from "@/lib/ai/prompts/promptVersionRegistry";
+import { getPlatformAdditionalInstruction, getPlatformTemplateSelectionDefaults } from "@/lib/db/platformDefaults";
 
 type GenerateArgs = {
   userId: string;
@@ -31,6 +42,7 @@ type GenerateArgs = {
   referenceRoles?: Record<string, "layout" | "style" | "color">;
   strategy?: "fast" | "quality";
   sectionPlanOverride?: string[];
+  batchJobId?: string;
 };
 
 type PlanResult = {
@@ -38,6 +50,13 @@ type PlanResult = {
   templates: { id: string; htmlSnippet: string; tags: string[] }[];
   system: string;
   messages: any;
+  systemPromptVersion: string;
+  templateIdsUsed: string[];
+  assembledUserPromptText: string;
+  testVariantId: string | null;
+  testAssignments: TestAssignmentEntry[];
+  abMergedContext: MergedAbPromptContext;
+  resolvedSystemVersionKey: string;
   model: string;
   maxTokens: number;
   estimatedCostUsd: number;
@@ -66,7 +85,45 @@ async function planGeneration({
     partialIntent: partialFromShortcode as ParsedIntent,
   });
 
-  const templates = await selectTemplatesForIntent(routed);
+  const now = new Date();
+  const ab = await resolveAbTestsForGeneration({
+    userId,
+    platform: routed.platform,
+    format: String(routed.format),
+    now,
+  });
+  const testAssignments = ab.assignments;
+  const testVariantId = ab.legacyTestVariantId;
+  const platInstr = await getPlatformAdditionalInstruction(routed.platform, String(routed.format));
+  const abMerged =
+    platInstr && !ab.merged.additionalInstruction?.trim()
+      ? { ...ab.merged, additionalInstruction: platInstr }
+      : ab.merged;
+
+  const defaultSys = await getCurrentDefaultVersionKey(routed.platform, String(routed.format));
+  const resolvedSystemVersionKey = abMerged.systemPromptVersion ?? defaultSys;
+
+  let templateSelectionStrategy: "prefer_high_approval_rate" | "prefer_recency" | "prefer_diversity" =
+    "prefer_high_approval_rate";
+  let approvalRateMultiplier = 1;
+  if (abMerged.templateSelectionStrategy === "prefer_recency") {
+    templateSelectionStrategy = "prefer_recency";
+  } else if (abMerged.templateSelectionStrategy === "prefer_diversity") {
+    templateSelectionStrategy = "prefer_diversity";
+  } else if (abMerged.templateSelectionStrategy === "prefer_high_approval") {
+    templateSelectionStrategy = "prefer_high_approval_rate";
+    approvalRateMultiplier = 2;
+  } else {
+    const plat = await getPlatformTemplateSelectionDefaults(routed.platform, String(routed.format));
+    templateSelectionStrategy = plat.strategy;
+    approvalRateMultiplier = plat.approvalRateMultiplier;
+  }
+
+  const templates = await selectTemplatesForIntent(routed, {
+    userId,
+    templateSelectionStrategy,
+    approvalRateMultiplier,
+  });
 
   const references: { referenceId: string; role?: "layout" | "style" | "color"; analysis: any }[] = [];
   for (const id of referenceIds ?? []) {
@@ -83,9 +140,14 @@ async function planGeneration({
     userPrompt: remainingPrompt,
     referenceImageUrl,
     referenceAnalyses: references,
+    resolvedSystemVersionKey,
+    abVariantContext: abMerged,
   });
 
   const { model, maxTokens, estimatedCostUsd } = chooseModel(routed, metadata);
+
+  const assembledUserPromptText =
+    messages?.[0]?.content?.[0]?.text != null ? String(messages[0].content[0].text) : "";
 
   return {
     plan: {
@@ -93,6 +155,13 @@ async function planGeneration({
       templates,
       system,
       messages,
+      systemPromptVersion: metadata.systemVersion,
+      templateIdsUsed: metadata.templateIds,
+      assembledUserPromptText,
+      testVariantId,
+      testAssignments,
+      abMergedContext: abMerged,
+      resolvedSystemVersionKey,
       model,
       maxTokens,
       estimatedCostUsd,
@@ -104,6 +173,23 @@ async function planGeneration({
       metadata.estimatedTokens.brand +
       metadata.estimatedTokens.request,
   };
+}
+
+// Used by the Anthropic Batch API worker to construct message batch requests
+// (system + messages + model/maxTokens + prompt metadata) without actually generating designs.
+export async function planDesignForAnthropicBatch(args: {
+  userId: string;
+  brandId: string;
+  projectId?: string;
+  prompt: string;
+  referenceImageUrl?: string;
+  referenceIds?: string[];
+  referenceRoles?: Record<string, "layout" | "style" | "color">;
+  strategy?: "fast" | "quality";
+  sectionPlanOverride?: string[];
+  batchJobId?: string;
+}): Promise<{ plan: PlanResult; remainingPrompt: string; estimatedTokens: number }> {
+  return planGeneration(args as any);
 }
 
 export async function generateDesign(args: GenerateArgs): Promise<{
@@ -125,12 +211,8 @@ export async function generateDesign(args: GenerateArgs): Promise<{
   };
 }
 
-function getModelPricing(model: string) {
-  return model === AI_MODELS.ROUTER_HAIKU ? AI_PRICING.HAIKU : AI_PRICING.SONNET;
-}
-
 function computeUsageCostUsd(model: string, usage: any): number {
-  const pricing = getModelPricing(model);
+  const pricing = getPricingForModel(model);
   const inputTokens = usage?.input_tokens ?? 0;
   const outputTokens = usage?.output_tokens ?? 0;
   const cacheRead = usage?.cache_read_input_tokens ?? 0;
@@ -141,6 +223,240 @@ function computeUsageCostUsd(model: string, usage: any): number {
     (cacheRead / 1_000_000) * pricing.inputPerMTokens * AI_PRICING.CACHE_READ_DISCOUNT;
   const costOutput = (outputTokens / 1_000_000) * pricing.outputPerMTokens;
   return Number((costInput + costOutput).toFixed(6));
+}
+
+// Used by the Anthropic Batch API worker to persist a finished Claude response
+// into `Design` + `DesignVersion` + `GenerationLog`, matching the non-stream path.
+export async function persistSingleDesignFromPlannedBatchResult(args: {
+  userId: string;
+  brandId: string;
+  projectId?: string;
+  prompt: string;
+  batchJobId?: string;
+  plan: PlanResult;
+  remainingPrompt: string;
+  html: string;
+  usage: any;
+  costUsdMultiplier?: number;
+}): Promise<{
+  designId: string;
+  versionId: string;
+  versionNumber: number;
+  finalHtml: string;
+  model: string;
+  totalTokens: number;
+  cachedTokens: number;
+  costUsd: number;
+  generationTimeMs: number;
+}> {
+  const startedAt = Date.now();
+  const { userId, brandId, projectId, prompt, batchJobId, plan, remainingPrompt, html, usage } = args;
+  const costUsdMultiplier = args.costUsdMultiplier ?? 1;
+
+  const brand = await prisma.brandProfile.findUnique({ where: { id: brandId } });
+  if (!brand) throw new Error("Brand not found during batch persistence");
+
+  // For batch generation we always create a fresh design record.
+  const design = await prisma.design.create({
+    data: {
+      userId,
+      brandId,
+      projectId: projectId ?? null,
+      title: remainingPrompt.slice(0, 80) || "Untitled design",
+      originalPrompt: prompt,
+      parsedIntent: plan.intent as any,
+      platform: plan.intent.platform,
+      format: String(plan.intent.format),
+      dimensions: plan.intent.dimensions as any,
+      referenceIds: [],
+      status: "generating",
+      tags: [],
+    },
+  });
+
+  const repaired = await postProcessHtml({
+    html: html.trim(),
+    intent: plan.intent,
+    brand: {
+      name: brand.name,
+      typography: brand.typography as any,
+      colors: brand.colors as any,
+    },
+    abModifiers: {
+      headlineSizeMultiplier: plan.abMergedContext?.headlineSizeModifier,
+      spacingMultiplier: plan.abMergedContext?.spacingModifier,
+    },
+    repairMalformedHtml: async (malformedHtml) => {
+      const repairResponse = await callAnthropicWithRetry(
+        {
+          model: AI_MODELS.GENERATOR_SONNET,
+          system: "The following HTML is malformed. Fix the structural issues and return the corrected complete HTML.",
+          max_tokens: plan.maxTokens,
+          messages: [{ role: "user", content: [{ type: "text", text: malformedHtml }] }],
+        },
+        { userId, designId: design.id }
+      );
+      return repairResponse.content[0]?.type === "text"
+        ? repairResponse.content[0].text.trim()
+        : malformedHtml;
+    },
+  });
+
+  const cachedTokens =
+    (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  const totalTokens = (usage?.input_tokens ?? 0) + (usage?.output_tokens ?? 0);
+  const baseCostUsd = computeUsageCostUsd(plan.model, usage);
+  const costUsd = Number((baseCostUsd * costUsdMultiplier).toFixed(6));
+  const generationTimeMs = Date.now() - startedAt;
+
+  const versionNumber = 1;
+  const version = await prisma.designVersion.create({
+    data: {
+      designId: design.id,
+      versionNumber,
+      htmlContent: repaired.html,
+      revisionPrompt: null,
+      aiModelUsed: plan.model,
+      promptTokens: usage?.input_tokens ?? null,
+      completionTokens: usage?.output_tokens ?? null,
+      cachedTokens,
+      generationTimeMs,
+    },
+  });
+
+  await prisma.design.update({
+    where: { id: design.id },
+    data: {
+      currentVersion: versionNumber,
+      status: "preview",
+      updatedAt: new Date(),
+    },
+  });
+
+  // Learning engine data: store generation so prompt scoring/preferences can learn.
+  void createGenerationLogRecord({
+    designId: design.id,
+    userId,
+    brandId,
+    platform: plan.intent.platform,
+    format: String(plan.intent.format),
+    systemPromptVersion: plan.systemPromptVersion,
+    templateIdsUsed: plan.templateIdsUsed,
+    assembledUserPromptText: plan.assembledUserPromptText,
+    system: plan.system,
+    fullPromptHash: sha256Hex(`${plan.system}\n\n${plan.assembledUserPromptText}`),
+    model: plan.model,
+    totalTokens,
+    estimatedCostUsd: plan.estimatedCostUsd,
+    costUsd,
+    revisionCount: 0,
+    wasApproved: null,
+    testVariantId: plan.testVariantId,
+    testAssignments: plan.testAssignments,
+    generationTimeMs,
+    batchJobId,
+    sectionCount: Array.isArray(plan.intent.sectionPlan) ? plan.intent.sectionPlan.length : null,
+    sectionPlan: Array.isArray(plan.intent.sectionPlan) ? plan.intent.sectionPlan : null,
+  }).catch(() => {});
+
+  // Enqueue thumbnail generation.
+  void enqueueExportJob({ designId: design.id, versionNumber, format: "thumbnail" }).catch(() => {});
+
+  return {
+    designId: design.id,
+    versionId: version.id,
+    versionNumber,
+    finalHtml: repaired.html,
+    model: plan.model,
+    totalTokens,
+    cachedTokens,
+    costUsd,
+    generationTimeMs,
+  };
+}
+
+function sha256Hex(input: string): string {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+async function createGenerationLogRecord(opts: {
+  designId: string;
+  userId: string;
+  brandId: string;
+  platform: string;
+  format: string;
+  systemPromptVersion: string;
+  templateIdsUsed: string[];
+  assembledUserPromptText: string;
+  system: string;
+  fullPromptHash: string;
+  model: string;
+  totalTokens: number;
+  estimatedCostUsd: number;
+  costUsd: number;
+  batchJobId?: string;
+  revisionCount?: number;
+  wasApproved?: boolean | null;
+  testVariantId?: string | null;
+  testAssignments?: TestAssignmentEntry[];
+  generationTimeMs?: number | null;
+  sectionCount?: number | null;
+  sectionPlan?: any;
+  sectionFailures?: any;
+  generationStrategy?: string | null;
+  parallelBatches?: number | null;
+}) {
+  const promptStructureHash = computePromptStructureHash({
+    systemPromptVersion: opts.systemPromptVersion,
+    templateIds: opts.templateIdsUsed,
+    platform: opts.platform,
+    format: opts.format,
+  });
+
+  return prisma.generationLog.create({
+    data: {
+      designId: opts.designId,
+      userId: opts.userId,
+      brandId: opts.brandId,
+      batchJobId: opts.batchJobId ?? null,
+      platform: opts.platform,
+      format: opts.format,
+      fullPromptHash: opts.fullPromptHash,
+      systemPromptVersion: opts.systemPromptVersion,
+      promptStructureHash,
+      templateIdsUsed: opts.templateIdsUsed,
+      model: opts.model,
+      totalTokens: opts.totalTokens,
+      estimatedCostUsd: opts.estimatedCostUsd,
+      costUsd: opts.costUsd,
+      revisionCount: opts.revisionCount ?? 0,
+      wasApproved: opts.wasApproved ?? null,
+      sessionDurationMs: null,
+
+      sectionCount: opts.sectionCount ?? null,
+      sectionPlan: opts.sectionPlan ?? null,
+      sectionFailures: opts.sectionFailures ?? null,
+      generationStrategy: opts.generationStrategy ?? null,
+      parallelBatches: opts.parallelBatches ?? null,
+      testVariantId: opts.testVariantId ?? null,
+      testAssignments: (opts.testAssignments?.length ? opts.testAssignments : null) as any,
+      generationTimeMs: opts.generationTimeMs ?? null,
+    } as any,
+  });
+}
+
+async function bumpLatestUnapprovedRevisionCount(designId: string, userId: string) {
+  // Revisions should affect the latest "live" generation log that hasn't been approved/exported yet.
+  const latest = await prisma.generationLog.findFirst({
+    where: { designId, userId, wasApproved: null },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
+  });
+  if (!latest) return;
+  await prisma.generationLog.update({
+    where: { id: latest.id },
+    data: { revisionCount: { increment: 1 } },
+  });
 }
 
 type StreamGenerateArgs = GenerateArgs & {
@@ -174,6 +490,17 @@ type StreamGenerateCallbacks = {
     sectionIndex: number;
     sectionHtml: string;
     assembledHtml: string;
+  }) => void | Promise<void>;
+  onScreenStart?: (payload: {
+    screenIndex: number;
+    screenType: string;
+    screenTitle: string;
+    totalScreens: number;
+  }) => void | Promise<void>;
+  onScreenComplete?: (payload: {
+    screenIndex: number;
+    screenType: string;
+    screenHtml: string;
   }) => void | Promise<void>;
 };
 
@@ -241,6 +568,100 @@ export async function streamGenerateDesign(
     sectionCount: Array.isArray(plan.intent.sectionPlan) ? plan.intent.sectionPlan.length : undefined,
   });
 
+  const wantsMobileFlow = shouldUseMobileFlowGenerator(plan.intent);
+
+  if (wantsMobileFlow) {
+    const mf = await generateMobileFlowHtml(
+      {
+        userId,
+        brandId,
+        intent: plan.intent,
+        userPrompt: remainingPrompt,
+        referenceImageUrl: args.referenceImageUrl,
+        model: plan.model,
+        maxTokens: plan.maxTokens,
+        strategy: args.strategy ?? "quality",
+      },
+      {
+        onScreenStart: async (p) => cb.onScreenStart?.(p),
+        onScreenComplete: async (p) => cb.onScreenComplete?.(p),
+      }
+    );
+
+    const versionNumber = args.nextVersionNumber ?? 1;
+    const version = await prisma.designVersion.create({
+      data: {
+        designId: design.id,
+        versionNumber,
+        htmlContent: mf.finalHtml,
+        revisionPrompt: null,
+        aiModelUsed: plan.model,
+        promptTokens: mf.totalTokens,
+        completionTokens: null,
+        cachedTokens: mf.cachedTokens,
+        generationTimeMs: mf.generationTimeMs,
+        isMultiScreen: true,
+        screenCount: mf.screenCount,
+      },
+    });
+
+    await prisma.design.update({
+      where: { id: design.id },
+      data: {
+        currentVersion: versionNumber,
+        status: "preview",
+        updatedAt: new Date(),
+      },
+    });
+
+    void createGenerationLogRecord({
+      designId: design.id,
+      userId: args.userId,
+      brandId,
+      platform: plan.intent.platform,
+      format: String(plan.intent.format),
+      systemPromptVersion: plan.systemPromptVersion,
+      templateIdsUsed: plan.templateIdsUsed,
+      assembledUserPromptText: plan.assembledUserPromptText,
+      system: plan.system,
+      fullPromptHash: sha256Hex(`${plan.system}\n\n${plan.assembledUserPromptText}`),
+      model: plan.model,
+      totalTokens: mf.totalTokens,
+      estimatedCostUsd: plan.estimatedCostUsd,
+      costUsd: mf.costUsd,
+      revisionCount: 0,
+      wasApproved: null,
+      testVariantId: plan.testVariantId,
+      testAssignments: plan.testAssignments,
+      generationTimeMs: mf.generationTimeMs,
+      batchJobId: args.batchJobId,
+      sectionCount: mf.screenCount,
+      sectionPlan: plan.intent.screenPlan ?? null,
+      sectionFailures: mf.screenFailures,
+      generationStrategy: "mobile_flow",
+      parallelBatches: null,
+    }).catch(() => {});
+
+    void enqueueExportJob({
+      designId: design.id,
+      versionNumber,
+      format: "thumbnail",
+    }).catch(() => {});
+
+    return {
+      designId: design.id,
+      versionId: version.id,
+      versionNumber,
+      finalHtml: mf.finalHtml,
+      model: plan.model,
+      estimatedTokens,
+      totalTokens: mf.totalTokens,
+      cachedTokens: mf.cachedTokens,
+      costUsd: mf.costUsd,
+      generationTimeMs: mf.generationTimeMs,
+    };
+  }
+
   const wantsMultiSection =
     (plan.intent.platform === "website" || plan.intent.platform === "dashboard") &&
     (!Array.isArray(plan.intent.sectionPlan) || plan.intent.sectionPlan.length >= 4);
@@ -287,27 +708,34 @@ export async function streamGenerateDesign(
       },
     });
 
-    // Store multi-section analytics for website/dashboard generations.
-    void prisma.generationLog
-      .create({
-        data: {
-          designId: design.id,
-          userId: args.userId,
-          fullPromptHash: "",
-          systemPromptVersion: PROMPTS.generation?.version ?? "",
-          templateIdsUsed: [],
-          brandId,
-          model: plan.model,
-          totalTokens: multi.totalTokens,
-          costUsd: multi.costUsd,
-          sectionCount: multi.sectionCount,
-          sectionPlan: Array.isArray(plan.intent.sectionPlan) ? plan.intent.sectionPlan : null,
-          sectionFailures: multi.sectionFailures,
-          generationStrategy: args.strategy ?? "quality",
-          parallelBatches: multi.parallelBatches,
-        } as any,
-      })
-      .catch(() => {});
+    // Learning engine data: record this generation so prompt scoring & preferences can learn.
+    void createGenerationLogRecord({
+      designId: design.id,
+      userId: args.userId,
+      brandId,
+      platform: plan.intent.platform,
+      format: String(plan.intent.format),
+      systemPromptVersion: plan.systemPromptVersion,
+      templateIdsUsed: plan.templateIdsUsed,
+      assembledUserPromptText: plan.assembledUserPromptText,
+      system: plan.system,
+      fullPromptHash: sha256Hex(`${plan.system}\n\n${plan.assembledUserPromptText}`),
+      model: plan.model,
+      totalTokens: multi.totalTokens,
+      estimatedCostUsd: plan.estimatedCostUsd,
+      costUsd: multi.costUsd,
+      revisionCount: 0,
+      wasApproved: null,
+      testVariantId: plan.testVariantId,
+      testAssignments: plan.testAssignments,
+      generationTimeMs: multi.generationTimeMs,
+      batchJobId: args.batchJobId,
+      sectionCount: multi.sectionCount,
+      sectionPlan: Array.isArray(plan.intent.sectionPlan) ? plan.intent.sectionPlan : null,
+      sectionFailures: multi.sectionFailures,
+      generationStrategy: args.strategy ?? "quality",
+      parallelBatches: multi.parallelBatches,
+    }).catch(() => {});
 
     void enqueueExportJob({
       designId: design.id,
@@ -337,6 +765,22 @@ export async function streamGenerateDesign(
   for (let attempt = 0; attempt < delays.length; attempt++) {
     try {
       fullHtml = "";
+      if (isGeminiPrimaryLlm()) {
+        const usageResult = await streamGeminiGeneration({
+          system: plan.system,
+          max_tokens: plan.maxTokens,
+          messages: plan.messages,
+          userId: args.userId,
+          designId: design.id,
+          onText: (textDelta) => {
+            fullHtml += textDelta;
+            void cb.onChunk?.({ html: textDelta });
+          },
+        });
+        finalMessage = { usage: usageResult.usage };
+        break;
+      }
+
       const stream = anthropic.messages.stream({
         model: plan.model as (typeof AI_MODELS)[keyof typeof AI_MODELS],
         system: plan.system,
@@ -387,6 +831,10 @@ export async function streamGenerateDesign(
     html: fullHtml.trim(),
     intent: plan.intent,
     brand,
+    abModifiers: {
+      headlineSizeMultiplier: plan.abMergedContext?.headlineSizeModifier,
+      spacingMultiplier: plan.abMergedContext?.spacingModifier,
+    },
     repairMalformedHtml: async (malformedHtml) => {
       const repairResponse = await callAnthropicWithRetry(
         {
@@ -444,6 +892,30 @@ export async function streamGenerateDesign(
       updatedAt: new Date(),
     },
   });
+
+  // Learning engine data: store the generation so prompt scoring/preferences can learn.
+  void createGenerationLogRecord({
+    designId: design.id,
+    userId: args.userId,
+    brandId,
+    platform: plan.intent.platform,
+    format: String(plan.intent.format),
+    systemPromptVersion: plan.systemPromptVersion,
+    templateIdsUsed: plan.templateIdsUsed,
+    assembledUserPromptText: plan.assembledUserPromptText,
+    system: plan.system,
+    fullPromptHash: sha256Hex(`${plan.system}\n\n${plan.assembledUserPromptText}`),
+    model: plan.model,
+    totalTokens,
+    estimatedCostUsd: plan.estimatedCostUsd,
+    costUsd,
+    revisionCount: 0,
+    wasApproved: null,
+    testVariantId: plan.testVariantId,
+    testAssignments: plan.testAssignments,
+    generationTimeMs,
+    batchJobId: args.batchJobId,
+  }).catch(() => {});
 
   // Enqueue thumbnail generation (real previews for design library).
   void enqueueExportJob({ designId: design.id, versionNumber, format: "thumbnail" }).catch(() => {});
@@ -573,8 +1045,13 @@ export async function streamReviseDesign(
           patternType: pattern.type,
           patternDetail: { revisionPrompt, pattern, slideIndex: slideIndex ?? null },
           frequency: 1,
+          designId: design.id,
+          isAggregated: false,
         },
       });
+
+      // Track revision count for prompt scoring (revisions before approval).
+      void bumpLatestUnapprovedRevisionCount(design.id, userId);
 
       return {
         versionId: version.id,
@@ -604,26 +1081,68 @@ export async function streamReviseDesign(
 
   let fullHtml = "";
   let finalMessage: any = null;
+  const reviseDelays = [1000, 3000, 9000];
+  let reviseLastError: unknown = null;
 
-  const stream = anthropic.messages.stream({
-    model: AI_MODELS.GENERATOR_SONNET as any,
-    system,
-    max_tokens: 8192,
-    messages,
-  });
+  for (let attempt = 0; attempt < reviseDelays.length; attempt++) {
+    try {
+      fullHtml = "";
+      if (isGeminiPrimaryLlm()) {
+        const usageResult = await streamGeminiGeneration({
+          system,
+          max_tokens: 8192,
+          messages,
+          userId,
+          designId: design.id,
+          onText: (textDelta) => {
+            fullHtml += textDelta;
+            void cb.onChunk?.({ html: textDelta });
+          },
+        });
+        finalMessage = { usage: usageResult.usage };
+        break;
+      }
 
-  stream.on("text", (textDelta) => {
-    fullHtml += textDelta;
-    void cb.onChunk?.({ html: textDelta });
-  });
+      const stream = anthropic.messages.stream({
+        model: AI_MODELS.GENERATOR_SONNET as any,
+        system,
+        max_tokens: 8192,
+        messages,
+      });
 
-  try {
-    finalMessage = await stream.finalMessage();
-  } catch (err: any) {
+      stream.on("text", (textDelta) => {
+        fullHtml += textDelta;
+        void cb.onChunk?.({ html: textDelta });
+      });
+
+      finalMessage = await stream.finalMessage();
+      break;
+    } catch (err: any) {
+      reviseLastError = err;
+      const status = err?.status ?? err?.response?.status;
+      const code = err?.error?.type ?? err?.code;
+      const shouldRetry = status === 429 || status === 529 || code === "rate_limit_error";
+      if (!shouldRetry || attempt === reviseDelays.length - 1) {
+        await prisma.design.update({
+          where: { id: design.id },
+          data: { status: "preview" },
+        });
+        throw err;
+      }
+      await new Promise((resolve) => setTimeout(resolve, reviseDelays[attempt]));
+    }
+  }
+
+  if (!finalMessage) {
     await prisma.design.update({
       where: { id: design.id },
       data: { status: "preview" },
     });
+    const status = (reviseLastError as any)?.status ?? (reviseLastError as any)?.response?.status;
+    const err = new Error(
+      status === 429 ? "AI provider rate limit exceeded" : "AI service unavailable"
+    ) as Error & { code?: string };
+    err.code = status === 429 ? "AI_RATE_LIMIT_EXCEEDED" : "AI_SERVICE_UNAVAILABLE";
     throw err;
   }
 
@@ -660,8 +1179,13 @@ export async function streamReviseDesign(
       patternType: pattern.type,
       patternDetail: { revisionPrompt, pattern, slideIndex: slideIndex ?? null },
       frequency: 1,
+      designId: design.id,
+      isAggregated: false,
     },
   });
+
+  // Track revision count for prompt scoring (revisions before approval).
+  void bumpLatestUnapprovedRevisionCount(design.id, userId);
 
   return {
     versionId: version.id,
@@ -760,8 +1284,13 @@ export async function reviseDesign({
       patternType: pattern.type,
       patternDetail: { revisionPrompt, pattern, slideIndex: slideIndex ?? null },
       frequency: 1,
+      designId: design.id,
+      isAggregated: false,
     },
   });
+
+  // Track revision count for prompt scoring (revisions before approval).
+  void bumpLatestUnapprovedRevisionCount(design.id, userId);
 
   return {
     versionId: version.id,

@@ -19,7 +19,8 @@ export async function GET(
   if (!path) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const baseDir = process.env.LOCAL_STORAGE_PATH ?? "./storage";
-  const fullPath = join(process.cwd(), baseDir, path);
+  // Keep tracing scoped to avoid bundling the entire project tree.
+  const fullPath = join(/* turbopackIgnore: true */ process.cwd(), baseDir, path);
 
   try {
     const buf = await readFile(fullPath);

@@ -12,5 +12,8 @@ Requirements:
 - If a <reference_analysis> block is present, use it for stylistic and structural inspiration only.
 - Never copy reference content, text, logos, or exact arrangement.
 - Apply the user's brand colors and typography as the source of truth.
+- If a <user_preferences> block is present:
+  - Apply preferences with confidence > 0.85 as firm defaults.
+  - Apply preferences with confidence 0.60-0.84 as gentle tendencies that can be overridden by explicit user instructions.
 `.trim();
 

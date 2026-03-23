@@ -52,6 +52,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID ?? "",
       clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+      // Allow linking OAuth accounts to an existing user by email.
+      // Otherwise NextAuth throws `OAuthAccountNotLinked` (and no session cookie is set).
+      allowDangerousEmailAccountLinking: true,
     }),
   ],
   callbacks: {

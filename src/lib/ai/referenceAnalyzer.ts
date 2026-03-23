@@ -96,7 +96,7 @@ async function readImageFromStorageUrl(fileUrl: string): Promise<Buffer> {
   const storagePath = parseStoragePathFromPublicUrl(fileUrl);
   if (!storagePath) throw new Error("Invalid storage URL");
   const baseDir = process.env.LOCAL_STORAGE_PATH ?? "./storage";
-  const fullPath = join(process.cwd(), baseDir, storagePath);
+  const fullPath = join(/* turbopackIgnore: true */ process.cwd(), baseDir, storagePath);
   return readFile(fullPath);
 }
 

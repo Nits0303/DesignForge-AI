@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { devtools } from "zustand/middleware";
 import type { Design, DesignVersion } from "@/types/design";
 import type { ReferenceAnalysis } from "@/types/ai";
+import type { MobileDeviceId } from "@/constants/mobileDevices";
+import { DEFAULT_MOBILE_DEVICE_ID } from "@/constants/mobileDevices";
 
 export type RevisionMessageRole = "user" | "assistant" | "system" | "error";
 
@@ -84,11 +86,18 @@ interface WorkspaceState {
     sectionCount?: number | null;
   } | null;
 
+  /** Mobile preview device + orientation (Sprint 14). */
+  activeDeviceId: MobileDeviceId;
+  deviceOrientation: "portrait" | "landscape";
+  setActiveDeviceId: (id: MobileDeviceId) => void;
+  setDeviceOrientation: (o: "portrait" | "landscape") => void;
+
   // Revision queue (FIFO, max 3)
   revisionQueue: RevisionQueueItem[];
   activeRevisionQueueId: string | null;
 
   setCurrentHtmlContent: (html: string) => void;
+  setActiveBrandProfileId: (id: string | null) => void;
   setGenerating: (value: boolean) => void;
   resetGeneration: () => void;
   setGenerationState: (state: GenerationState) => void;
@@ -122,6 +131,15 @@ interface WorkspaceState {
   enqueueRevision: (item: Omit<RevisionQueueItem, "id">) => boolean; // returns false if queue full
   dequeueRevision: () => RevisionQueueItem | undefined;
   setActiveRevisionQueueId: (id: string | null) => void;
+
+  /** When set, assign `projectId` on the active design after idle (no generation/revisions). */
+  deferredProjectId: string | null;
+  deferredProjectName: string | null;
+  setDeferredProject: (id: string | null, name?: string | null) => void;
+  clearDeferredProject: () => void;
+  /** Bumped after server-side design updates so Details panel refetches. */
+  workspaceDesignSyncNonce: number;
+  bumpWorkspaceDesignSync: () => void;
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(
@@ -153,10 +171,16 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     scrollToSectionType: null,
     lastPrompt: "",
     lastGenerationMeta: null,
+    activeDeviceId: DEFAULT_MOBILE_DEVICE_ID,
+    deviceOrientation: "portrait",
     revisionQueue: [],
     activeRevisionQueueId: null,
+    deferredProjectId: null,
+    deferredProjectName: null,
+    workspaceDesignSyncNonce: 0,
 
     setCurrentHtmlContent: (html) => set({ currentHtmlContent: html }),
+    setActiveBrandProfileId: (id) => set({ activeBrandProfileId: id }),
     setGenerating: (value) => set({ isGenerating: value }),
     resetGeneration: () =>
       set({
@@ -257,6 +281,8 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     setScrollToSectionType: (t) => set({ scrollToSectionType: t }),
     setLastPrompt: (prompt) => set({ lastPrompt: prompt }),
     setLastGenerationMeta: (meta) => set({ lastGenerationMeta: meta }),
+    setActiveDeviceId: (id) => set({ activeDeviceId: id }),
+    setDeviceOrientation: (o) => set({ deviceOrientation: o }),
 
     enqueueRevision: (item) => {
       const state = get();
@@ -273,5 +299,14 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       return first;
     },
     setActiveRevisionQueueId: (id) => set({ activeRevisionQueueId: id }),
+
+    setDeferredProject: (id, name = null) =>
+      set({
+        deferredProjectId: id,
+        deferredProjectName: name ?? null,
+      }),
+    clearDeferredProject: () => set({ deferredProjectId: null, deferredProjectName: null }),
+    bumpWorkspaceDesignSync: () =>
+      set((s) => ({ workspaceDesignSyncNonce: s.workspaceDesignSyncNonce + 1 })),
   }))
 );

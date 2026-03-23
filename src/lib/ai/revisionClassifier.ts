@@ -22,6 +22,7 @@ export type RevisionPattern =
     }
   | {
       type: "spacing_adjust";
+      direction: "more_space" | "less_space";
     }
   | {
       type: "cta_addition";
@@ -96,7 +97,19 @@ export function classifyRevision(text: string): RevisionPattern {
   }
 
   if (/(spacing|padding|gap|space|room|tight|spread)/i.test(text)) {
-    return { type: "spacing_adjust" };
+    const lowerText = lower;
+    const looksMore =
+      /(more|increase|bigger|larger|looser|wider|spread|room)/i.test(lowerText) ||
+      /(add|extra)\s+(padding|gap|space|spacing)/i.test(lowerText);
+    const looksLess =
+      /(less|decrease|smaller|tighter|compact|reduce|narrow)/i.test(lowerText) ||
+      /(remove|less)\s+(padding|gap|space|spacing)/i.test(lowerText);
+
+    if (looksMore && !looksLess) return { type: "spacing_adjust", direction: "more_space" };
+    if (looksLess && !looksMore) return { type: "spacing_adjust", direction: "less_space" };
+
+    // Default to "more_space" when ambiguous; user corrections will refine over time.
+    return { type: "spacing_adjust", direction: "more_space" };
   }
 
   if (/(button|cta|call to action|click here|learn more|sign up)/i.test(text)) {

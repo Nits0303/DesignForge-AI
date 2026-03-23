@@ -1,4 +1,3 @@
-import { prisma } from "@/lib/db/prisma";
 import { AI_MODELS } from "@/constants/models";
 
 type Params = {
@@ -34,28 +33,7 @@ export async function logAIUsage({
       costUsd,
     });
   }
-
-  if (process.env.NODE_ENV === "production") {
-    try {
-      await prisma.generationLog.create({
-        data: {
-          designId: designId ?? null,
-          userId,
-          fullPromptHash: "",
-          systemPromptVersion: "",
-          templateIdsUsed: [],
-          brandId: null,
-          model,
-          totalTokens: inputTokens + outputTokens,
-          costUsd,
-          revisionCount: 0,
-          wasApproved: null,
-          sessionDurationMs: null,
-        },
-      });
-    } catch (err) {
-      console.error("Failed to log AI usage", err);
-    }
-  }
+  // Learning engine data collection happens in generation/revision/approve/export flows.
+  // This helper only logs usage details to stdout to avoid writing incomplete GenerationLog rows.
 }
 

@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { MoreVertical, Pencil, Trash2, Copy, Star } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { MoreVertical, Trash2, Copy, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import type { BrandProfile } from "@/types/brand";
@@ -19,6 +20,7 @@ function formatDate(iso: string | Date | undefined) {
 }
 
 export function BrandsGrid({ initialBrands }: Props) {
+  const router = useRouter();
   const [brands, setBrands] = useState<BrandProfile[]>(initialBrands);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [brandToDelete, setBrandToDelete] = useState<BrandProfile | null>(null);
@@ -104,7 +106,16 @@ export function BrandsGrid({ initialBrands }: Props) {
         return (
           <div
             key={b.id}
-            className="rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-5"
+            className="cursor-pointer rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-5 transition-colors hover:bg-[hsl(var(--surface-elevated))]"
+            onClick={() => router.push(`/brands/${b.id}`)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                router.push(`/brands/${b.id}`);
+              }
+            }}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -141,17 +152,12 @@ export function BrandsGrid({ initialBrands }: Props) {
               </div>
 
               <div className="flex items-center gap-2">
-                <Link href={`/brands/${b.id}`}>
-                  <Button variant="secondary" size="sm">
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Edit
-                  </Button>
-                </Link>
                 <div className="relative">
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => {
+                    onClick={(e) => {
+                      e.stopPropagation();
                       const el = document.getElementById(`menu-${b.id}`);
                       if (el) el.classList.toggle("hidden");
                     }}
@@ -166,7 +172,10 @@ export function BrandsGrid({ initialBrands }: Props) {
                     <button
                       type="button"
                       disabled={busyId === b.id}
-                      onClick={() => setDefault(b.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void setDefault(b.id);
+                      }}
                       className="flex w-full items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-left text-sm hover:bg-[hsl(var(--accent-muted))]"
                     >
                       <Star className="h-4 w-4" />
@@ -175,7 +184,10 @@ export function BrandsGrid({ initialBrands }: Props) {
                     <button
                       type="button"
                       disabled={busyId === b.id}
-                      onClick={() => duplicate(b.id)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void duplicate(b.id);
+                      }}
                       className="flex w-full items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-left text-sm hover:bg-[hsl(var(--accent-muted))]"
                     >
                       <Copy className="h-4 w-4" />
@@ -184,7 +196,10 @@ export function BrandsGrid({ initialBrands }: Props) {
                     <button
                       type="button"
                       disabled={busyId === b.id}
-                      onClick={() => setBrandToDelete(b)}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setBrandToDelete(b);
+                      }}
                       className="flex w-full items-center gap-2 rounded-[var(--radius)] px-3 py-2 text-left text-sm text-[hsl(var(--destructive))] hover:bg-[hsl(var(--destructive))]/10"
                     >
                       <Trash2 className="h-4 w-4" />

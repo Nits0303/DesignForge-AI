@@ -48,6 +48,7 @@ export async function POST(req: Request) {
   });
 
   if (existing) {
+    await prisma.generationLog.updateMany({ where: { designId }, data: { wasApproved: true } });
     return ok({ downloadUrl: existing.fileUrl, exportId: existing.id, fileSizeBytes: existing.fileSizeBytes ?? null });
   }
 
@@ -56,6 +57,7 @@ export async function POST(req: Request) {
   if (out.fileSizeBytes > maxBytes) {
     return fail("EXPORT_TOO_LARGE", "The ZIP is too large (>100MB). Export individual slides instead.", 413);
   }
+  await prisma.generationLog.updateMany({ where: { designId }, data: { wasApproved: true } });
 
   return ok({ downloadUrl: out.downloadUrl, exportId: out.exportId, fileSizeBytes: out.fileSizeBytes });
 }

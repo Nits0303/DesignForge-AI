@@ -1,4 +1,5 @@
 import type { Platform } from "@/types/design";
+import { DEFAULT_MOBILE_DEVICE_ID, MOBILE_DEVICE_PRESETS } from "@/constants/mobileDevices";
 
 type PlatformSpec = {
   displayName: string;
@@ -63,11 +64,49 @@ export const PLATFORM_SPECS: Record<Platform, PlatformSpec> = {
     },
   },
   mobile: {
-    displayName: "Mobile",
-    supportedFormats: ["screen"],
-    defaultDimensions: {
-      screen: { width: 390, height: 844 },
-    },
+    displayName: "Mobile App UI",
+    supportedFormats: [
+      "onboarding_flow",
+      "home_feed",
+      "profile_screen",
+      "settings_screen",
+      "auth_flow",
+      "product_detail",
+      "checkout_flow",
+      "search_screen",
+      "notification_screen",
+      "empty_state",
+      "dashboard_screen",
+      "map_screen",
+      "chat_screen",
+      "media_player",
+      "screen", // legacy single-screen alias
+    ],
+    defaultDimensions: (() => {
+      const d = MOBILE_DEVICE_PRESETS[DEFAULT_MOBILE_DEVICE_ID];
+      const base = { width: d.width, height: d.height } as const;
+      const entries = [
+        "onboarding_flow",
+        "home_feed",
+        "profile_screen",
+        "settings_screen",
+        "auth_flow",
+        "product_detail",
+        "checkout_flow",
+        "search_screen",
+        "notification_screen",
+        "empty_state",
+        "dashboard_screen",
+        "map_screen",
+        "chat_screen",
+        "media_player",
+        "screen",
+      ];
+      return Object.fromEntries(entries.map((k) => [k, base])) as Record<
+        string,
+        { width: number; height: number | "auto" }
+      >;
+    })(),
   },
   dashboard: {
     displayName: "Dashboard",

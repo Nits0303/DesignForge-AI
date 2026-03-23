@@ -29,5 +29,16 @@ export const SECTION_CATEGORIES: Record<string, string[]> = {
   filter_bar: ["filter_bar", "table_filters"],
   user_table: ["user_table", "table"],
   settings_sections: ["settings", "settings_page"],
+
+  // Mobile screen types → template categories (Sprint 14)
+  welcome: ["onboarding_welcome", "onboarding"],
+  onboarding: ["onboarding", "onboarding_welcome"],
+  auth_sign_in: ["auth", "mobile_auth"],
+  home_feed: ["home_feed", "feed", "mobile"],
+  profile_screen: ["profile", "mobile_profile"],
+  settings_screen: ["settings", "mobile_settings"],
+  product_detail: ["product", "detail", "mobile_detail"],
+  checkout: ["checkout", "ecommerce", "mobile_checkout"],
+  chat_screen: ["chat", "messaging", "mobile"],
 };
 

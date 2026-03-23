@@ -10,7 +10,7 @@ import { buildDependencyBatches } from "@/constants/sectionDependencies";
 import { wrapWithDashboardBrowserChrome } from "@/lib/preview/browserChrome";
 
 import type { ParsedIntent } from "@/types/ai";
-import { AI_MODELS, AI_PRICING } from "@/constants/models";
+import { AI_MODELS, AI_PRICING, getPricingForModel } from "@/constants/models";
 
 type MultiSectionCallbacks = {
   onSectionStart?: (payload: {
@@ -27,7 +27,7 @@ type MultiSectionCallbacks = {
 };
 
 function computeUsageCostUsd(model: string, usage: any): number {
-  const pricing = model === AI_MODELS.ROUTER_HAIKU ? AI_PRICING.HAIKU : AI_PRICING.SONNET;
+  const pricing = getPricingForModel(model);
   const inputTokens = usage?.input_tokens ?? 0;
   const outputTokens = usage?.output_tokens ?? 0;
   const cacheRead = usage?.cache_read_input_tokens ?? 0;
@@ -181,7 +181,10 @@ export async function generateMultiSectionHtml({
     if (cached) {
       sectionHtml = cached;
     } else {
-      const sectionTemplates = await selectTemplatesForIntent(intent, { targetSection: sectionType });
+      const sectionTemplates = await selectTemplatesForIntent(intent, {
+        userId,
+        targetSection: sectionType,
+      });
 
       const componentLines = passName === "fast"
         ? sectionTemplates

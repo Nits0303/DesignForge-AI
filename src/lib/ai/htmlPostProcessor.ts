@@ -7,6 +7,8 @@ type Args = {
   intent: ParsedIntent;
   brand: Pick<BrandProfile, "colors" | "typography" | "name">;
   repairMalformedHtml?: (html: string) => Promise<string>;
+  /** A/B test HTML modifiers (Sprint 16). */
+  abModifiers?: { headlineSizeMultiplier?: number; spacingMultiplier?: number };
 };
 
 type Result = {
@@ -33,7 +35,14 @@ const SELF_CLOSING_TAGS = new Set([
 
 function ensureRootDimensions(rootHtml: string, intent: ParsedIntent): string {
   const doc = parse(rootHtml);
-  const rootEl: any = (doc.firstChild as any) || doc;
+  const rootEl: any =
+    (doc.querySelector("html") as any) ||
+    (doc.querySelector("body > *") as any) ||
+    (doc.firstChild as any);
+  if (!rootEl || typeof rootEl.setAttribute !== "function") {
+    // If parser returns a non-element root (e.g. text/comment), keep output unchanged.
+    return doc.toString();
+  }
 
   const dims = Array.isArray(intent.dimensions)
     ? intent.dimensions[0]!
@@ -172,6 +181,101 @@ function validateHtmlStructure(html: string): { valid: boolean; reason?: string 
   return { valid: true };
 }
 
+/**
+ * Guards against "blank but valid" outputs like a lone empty container.
+ * These currently render as a white canvas and look like a broken preview.
+ */
+function hasMeaningfulDesignContent(html: string): boolean {
+  const doc = parse(html);
+  const root: any = doc.querySelector("body") || doc.querySelector("html") || doc;
+  const elements = root.querySelectorAll?.("*") ?? [];
+  const text = String(root.text ?? "").replace(/\s+/g, " ").trim();
+
+  const richNodes = root.querySelectorAll?.(
+    "img,svg,canvas,video,section,article,main,header,footer,nav,button,input,a"
+  ) ?? [];
+
+  // Accept if there is enough structure, text, or rich visual/interactive nodes.
+  if (elements.length >= 6) return true;
+  if (text.length >= 24) return true;
+  if (richNodes.length >= 2) return true;
+
+  return false;
+}
+
+/** Ensures mobile previews respect notch / home-indicator safe areas when rendered in device frames. */
+function injectMobileSafeAreaInsets(html: string, intent: ParsedIntent): string {
+  if (intent.platform !== "mobile") return html;
+  if (html.includes('data-designforge-mobile-safe-area="1"')) return html;
+
+  const css = `<style data-designforge-mobile-safe-area="1">
+  html, body { box-sizing: border-box; }
+  body {
+    padding-top: max(10px, env(safe-area-inset-top, 0px));
+    padding-bottom: max(10px, env(safe-area-inset-bottom, 0px));
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+</style>`;
+
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (m) => `${m}\n${css}\n`);
+  }
+  if (html.includes("</head>")) {
+    return html.replace("</head>", `${css}\n</head>`);
+  }
+  return `${css}\n${html}`;
+}
+
+/** Apply A/B headline/spacing multipliers to inline styles (best-effort). */
+function applyAbModifiers(
+  html: string,
+  modifiers: { headlineSizeMultiplier?: number; spacingMultiplier?: number }
+): string {
+  const hm = modifiers.headlineSizeMultiplier;
+  const sm = modifiers.spacingMultiplier;
+  if ((!hm || hm === 1) && (!sm || sm === 1)) return html;
+
+  const doc = parse(html);
+  const scaleFont = (style: string, mult: number) => {
+    return style.replace(/font-size\s*:\s*([\d.]+)(px|rem)/gi, (_, n, u) => {
+      const v = parseFloat(n) * mult;
+      return `font-size: ${v.toFixed(u === "rem" ? 3 : 0)}${u}`;
+    });
+  };
+  const scaleSpacing = (style: string, mult: number) => {
+    return style.replace(
+      /(padding|margin|gap)\s*:\s*([^;]+)/gi,
+      (_m, prop, val) => {
+        const next = String(val).replace(/([\d.]+)px/gi, (_, n) => `${Math.round(parseFloat(n) * mult)}px`);
+        return `${prop}: ${next}`;
+      }
+    );
+  };
+
+  const walk = (node: any) => {
+    if (!node || typeof node !== "object") return;
+    const tag = String(node.rawTagName || "").toLowerCase();
+    const st = node.getAttribute?.("style");
+    if (st && typeof st === "string") {
+      let next = st;
+      if (hm && hm !== 1 && /^h[1-6]$/i.test(tag)) {
+        next = scaleFont(next, hm);
+      }
+      if (sm && sm !== 1) {
+        next = scaleSpacing(next, sm);
+      }
+      node.setAttribute("style", next);
+    }
+    const ch = node.childNodes;
+    if (ch && ch.length) {
+      for (const c of ch) walk(c);
+    }
+  };
+  walk(doc as any);
+  return doc.toString();
+}
+
 function injectAutoHeightPostMessage(html: string, intent: ParsedIntent) {
   const shouldInject = intent.platform === "website" || intent.platform === "dashboard";
   if (!shouldInject) return html;
@@ -236,6 +340,7 @@ export async function postProcessHtml({
   intent,
   brand,
   repairMalformedHtml,
+  abModifiers,
 }: Args): Promise<Result> {
   const warnings: string[] = [];
   let currentHtml = html;
@@ -260,9 +365,22 @@ export async function postProcessHtml({
 
   let processed = stripScriptsAndHandlers(currentHtml);
   processed = normalisePlaceholderImages(processed);
+  if (abModifiers) {
+    processed = applyAbModifiers(processed, {
+      headlineSizeMultiplier: abModifiers.headlineSizeMultiplier,
+      spacingMultiplier: abModifiers.spacingMultiplier,
+    });
+  }
   processed = ensureRootDimensions(processed, intent);
   processed = ensureTailwindAndFonts(processed, brand);
+  processed = injectMobileSafeAreaInsets(processed, intent);
   processed = injectAutoHeightPostMessage(processed, intent);
+
+  if (!hasMeaningfulDesignContent(processed)) {
+    const err = new Error("Generated output was empty. Please try again.");
+    (err as Error & { code?: string }).code = "GENERATION_EMPTY_HTML";
+    throw err;
+  }
 
   // Very light brand color check
   const colors = (brand.colors ?? {}) as any;

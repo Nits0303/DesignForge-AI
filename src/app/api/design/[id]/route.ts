@@ -65,6 +65,14 @@ export async function PUT(req: Request, context: { params: Promise<{ id: string 
     });
     if (!existing) return fail("NOT_FOUND", "Design not found", 404);
 
+    if (parsed.data.projectId !== undefined && parsed.data.projectId !== null) {
+      const proj = await prisma.project.findFirst({
+        where: { id: parsed.data.projectId, userId },
+        select: { id: true },
+      });
+      if (!proj) return fail("NOT_FOUND", "Project not found", 404);
+    }
+
     const updated = await prisma.design.update({
       where: { id },
       data: parsed.data as any,

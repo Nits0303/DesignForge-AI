@@ -98,7 +98,7 @@ export default async function SharePreviewPage({
         >
           <iframe
             title={`${title} preview`}
-            sandbox="allow-same-origin allow-scripts"
+            sandbox="allow-scripts"
             srcDoc={safeHtml}
             className="h-full w-full border-0"
             style={{ display: "block" }}

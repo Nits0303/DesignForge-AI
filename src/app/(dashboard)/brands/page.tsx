@@ -1,20 +1,31 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { auth } from "@/lib/auth/auth";
-import { prisma } from "@/lib/db/prisma";
 import { BrandsGrid } from "@/components/brand/BrandsGrid";
 import { Button } from "@/components/ui/button";
+import type { BrandProfile } from "@/types/brand";
 
-export default async function BrandsPage() {
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) {
-    return null;
-  }
+export default function BrandsPage() {
+  const [brands, setBrands] = useState<BrandProfile[]>([]);
 
-  const brands = await prisma.brandProfile.findMany({
-    where: { userId },
-    orderBy: [{ isDefault: "desc" }, { createdAt: "desc" }],
-  });
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const res = await fetch("/api/brands");
+        const json = await res.json();
+        if (mounted && res.ok && json?.success) {
+          setBrands((json.data ?? []) as BrandProfile[]);
+        }
+      } catch {
+        // noop
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   return (
     <div className="space-y-6">
