@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check, ExternalLink, RefreshCw, Share2, ThumbsUp } from "lucide-react";
+import { AlertTriangle, Check, ExternalLink, RefreshCw, Share2, ThumbsUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useUIStore } from "@/store/useUIStore";
@@ -181,19 +181,24 @@ export function WorkspacePreviewToolbar({
             Regenerate
           </Button>
           {showRegenConfirm && (
-            <div className="absolute right-0 top-8 z-50 w-48 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-3 shadow-lg text-xs">
-              <p className="mb-2 text-[hsl(var(--foreground))]">Regenerate from scratch?</p>
+            <div className="absolute right-0 top-8 z-50 w-72 rounded border border-amber-500/40 bg-[hsl(var(--surface-elevated))] p-3 shadow-lg text-xs">
+              <div className="mb-2 flex items-start gap-2 text-[hsl(var(--foreground))]">
+                <AlertTriangle className="mt-0.5 h-4 w-4 text-amber-500" />
+                <p>
+                  This will regenerate the design from scratch. Your current version will be saved in version history.
+                </p>
+              </div>
               <div className="flex gap-2">
                 <button
                   type="button"
-                  className="flex-1 rounded bg-[hsl(var(--accent))] py-1 text-white hover:opacity-90"
+                  className="flex-1 rounded bg-red-600 py-1 text-white hover:bg-red-500"
                   onClick={handleRegen}
                 >
-                  Yes
+                  Regenerate
                 </button>
                 <button
                   type="button"
-                  className="flex-1 rounded border border-[hsl(var(--border))] py-1 hover:bg-[hsl(var(--surface))]"
+                  className="flex-1 rounded py-1 text-[hsl(var(--muted-foreground))] underline hover:text-[hsl(var(--foreground))]"
                   onClick={() => setShowRegenConfirm(false)}
                 >
                   Cancel

@@ -30,6 +30,20 @@ export default function DashboardPage() {
   const [tryWebsiteShown, setTryWebsiteShown] = useState<boolean | null>(null);
   const [lastQuickShortcode, setLastQuickShortcode] = useState<string | null>(null);
   const adminDeniedToastShown = useRef(false);
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+  const autoResizePrompt = () => {
+    const el = promptRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 150);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > 150 ? "auto" : "hidden";
+  };
+
+  useEffect(() => {
+    autoResizePrompt();
+  }, [prompt]);
+
 
   useEffect(() => {
     if (adminDeniedToastShown.current) return;
@@ -197,11 +211,26 @@ export default function DashboardPage() {
 
       <div className="rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-4">
         <div className="flex gap-3">
-          <input
+          <textarea
+            ref={promptRef}
             value={prompt}
+            rows={1}
             onChange={(e) => setPrompt(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                if (prompt.trim()) router.push(`/workspace?prompt=${encodeURIComponent(prompt)}`);
+              }
+            }}
             placeholder="Describe a design to generate..."
-            className="h-10 flex-1 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-3 text-sm"
+            style={{
+              resize: "none",
+              overflow: "hidden",
+              maxHeight: "150px",
+              overflowWrap: "anywhere",
+              wordBreak: "break-word",
+            }}
+            className="min-h-10 flex-1 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-3 py-2 pr-4 text-sm whitespace-pre-wrap"
           />
           <Button
             onClick={() => router.push(`/workspace?prompt=${encodeURIComponent(prompt)}`)}

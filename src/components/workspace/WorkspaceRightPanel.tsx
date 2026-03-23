@@ -76,7 +76,12 @@ function detectSectionTarget(text: string, sectionPlan?: string[] | null) {
 
 // ─── component ──────────────────────────────────────────────────────────────
 
-export function WorkspaceRightPanel() {
+export function WorkspaceRightPanel({
+  layout = "desktop",
+}: {
+  layout?: "desktop" | "mobile";
+}) {
+  const idSuf = layout === "mobile" ? "-mobile" : "";
   const [tab, setTab] = useState<"revisions" | "details">("revisions");
   const [revisionInput, setRevisionInput] = useState("");
   const [showJumpBtn, setShowJumpBtn] = useState(false);
@@ -381,7 +386,7 @@ export function WorkspaceRightPanel() {
 
   return (
     <Tooltip.Provider delayDuration={600}>
-      <div id="workspace-right-panel" className="flex h-full flex-col bg-[hsl(var(--surface))]">
+      <div id={`workspace-right-panel${idSuf}`} className="flex h-full flex-col bg-[hsl(var(--surface))]">
         {/* Tab bar */}
         <div className="border-b border-[hsl(var(--border))] p-2">
           <div className="flex gap-2">
@@ -463,15 +468,26 @@ export function WorkspaceRightPanel() {
                   Ask for changes like "Increase heading size" or "Use darker background".
                 </div>
               ) : (
-                revisionMessages.map((m) => (
-                  <MessageBubble
-                    key={m.id}
-                    message={m}
-                    onRetry={submitRevision}
-                    targetSection={detectSectionTarget(m.content, sectionPlan)}
-                    onHoverSection={setHoveredSectionType}
-                  />
-                ))
+                revisionMessages.map((m) => {
+                  const idx = revisionMessages.findIndex((x) => x.id === m.id);
+                  const retryPrompt =
+                    m.role === "error"
+                      ? [...revisionMessages]
+                          .slice(0, idx)
+                          .reverse()
+                          .find((x) => x.role === "user" && x.content.trim().length > 0)?.content ?? ""
+                      : "";
+                  return (
+                    <MessageBubble
+                      key={m.id}
+                      message={m}
+                      onRetry={submitRevision}
+                      retryPrompt={retryPrompt}
+                      targetSection={detectSectionTarget(m.content, sectionPlan)}
+                      onHoverSection={setHoveredSectionType}
+                    />
+                  );
+                })
               )}
 
               {/* Typing indicator */}
@@ -523,7 +539,7 @@ export function WorkspaceRightPanel() {
               </div>
 
               <textarea
-                id="revision-textarea"
+                id={`revision-textarea${idSuf}`}
                 value={revisionInput}
                 onChange={(e) => setRevisionInput(e.target.value.slice(0, 1000))}
                 placeholder="Request a change..."
@@ -625,6 +641,7 @@ export function WorkspaceRightPanel() {
 function MessageBubble({
   message,
   onRetry,
+  retryPrompt,
   targetSection,
   onHoverSection,
 }: {
@@ -636,6 +653,7 @@ function MessageBubble({
     isQueued?: boolean;
   };
   onRetry: (text: string) => void;
+  retryPrompt?: string;
   targetSection?: string | null;
   onHoverSection: (t: string | null) => void;
 }) {
@@ -669,8 +687,10 @@ function MessageBubble({
         </div>
         <button
           type="button"
-          onClick={() => onRetry(message.content)}
-          className="self-start rounded border border-red-400/40 px-2 py-0.5 text-[10px] hover:bg-red-400/10"
+          onClick={() => onRetry((retryPrompt ?? "").trim())}
+          disabled={!retryPrompt?.trim()}
+          className="self-start rounded border border-red-400/40 px-2 py-0.5 text-[10px] hover:bg-red-400/10 disabled:cursor-not-allowed disabled:opacity-50"
+          title={retryPrompt?.trim() ? "Retry last user request" : "No previous user request found"}
         >
           Retry
         </button>

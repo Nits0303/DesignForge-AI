@@ -225,6 +225,135 @@ function computeUsageCostUsd(model: string, usage: any): number {
   return Number((costInput + costOutput).toFixed(6));
 }
 
+async function postProcessWithEmptyFallback(args: {
+  html: string;
+  plan: PlanResult;
+  brand: { name: string; typography: any; colors: any };
+  userId: string;
+  designId: string;
+  userPrompt: string;
+}): Promise<{ html: string; warnings: string[] }> {
+  const attemptPostProcess = async (candidateHtml: string) =>
+    postProcessHtml({
+      html: candidateHtml.trim(),
+      intent: args.plan.intent,
+      brand: args.brand,
+      abModifiers: {
+        headlineSizeMultiplier: args.plan.abMergedContext?.headlineSizeModifier,
+        spacingMultiplier: args.plan.abMergedContext?.spacingModifier,
+      },
+      repairMalformedHtml: async (malformedHtml) => {
+        const repairResponse = await callAnthropicWithRetry(
+          {
+            model: AI_MODELS.GENERATOR_SONNET,
+            system:
+              "The following HTML is malformed. Fix the structural issues and return the corrected complete HTML.",
+            max_tokens: args.plan.maxTokens,
+            messages: [{ role: "user", content: [{ type: "text", text: malformedHtml }] }],
+          },
+          { userId: args.userId, designId: args.designId }
+        );
+        return repairResponse.content[0]?.type === "text"
+          ? repairResponse.content[0].text.trim()
+          : malformedHtml;
+      },
+    });
+
+  try {
+    return await attemptPostProcess(args.html);
+  } catch (err: any) {
+    if (err?.code !== "GENERATION_EMPTY_HTML" && err?.code !== "GENERATION_INVALID_HTML") throw err;
+  }
+
+  const retryResponse = await callAnthropicWithRetry(
+    {
+      model: AI_MODELS.GENERATOR_SONNET,
+      system:
+        "You are a senior web UI designer. Return ONLY complete HTML (no markdown). Build a real, populated full-bleed poster layout with visible hierarchy and CTA elements. Avoid empty wrappers. Use inline styles and utility classes. Ensure the design fills the entire canvas (no large outer margins).",
+      max_tokens: args.plan.maxTokens,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text:
+                `The previous generation was empty/too thin and failed validation.\n` +
+                `Regenerate from scratch with richer visible content.\n\n` +
+                `INTENT JSON:\n${JSON.stringify(args.plan.intent, null, 2)}\n\n` +
+                `USER REQUEST:\n${args.plan.assembledUserPromptText}\n\n` +
+                `Return only complete HTML.`,
+            },
+          ],
+        },
+      ],
+    },
+    { userId: args.userId, designId: args.designId }
+  );
+
+  const retryHtml =
+    retryResponse.content[0]?.type === "text" ? retryResponse.content[0].text.trim() : "";
+  try {
+    if (!retryHtml) throw Object.assign(new Error("Empty retry"), { code: "GENERATION_EMPTY_HTML" });
+    return await attemptPostProcess(retryHtml);
+  } catch (err: any) {
+    if (err?.code !== "GENERATION_EMPTY_HTML" && err?.code !== "GENERATION_INVALID_HTML") throw err;
+  }
+
+  // Last-resort deterministic fallback so users always get a visible full-bleed poster.
+  const palette = (args.brand.colors ?? {}) as Record<string, string>;
+  const bg = palette.background || "#111827";
+  const fg = palette.text || "#ffffff";
+  const primary = palette.primary || "#6366f1";
+  const accent = palette.accent || "#a78bfa";
+  const title = args.userPrompt.replace(/^\/\w+\s*/i, "").trim() || "Design ready";
+  const dims = Array.isArray(args.plan.intent.dimensions)
+    ? args.plan.intent.dimensions[0]
+    : (args.plan.intent.dimensions as any);
+  const canvasW = Number(dims?.width ?? 1200);
+  const canvasH = Number(dims?.height ?? 627);
+
+  const fallbackHtml = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+  </head>
+  <body style="margin:0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:${bg}; color:${fg}; width:${canvasW}px; height:${canvasH}px; overflow:hidden;">
+    <main style="width:100%; height:100%; box-sizing:border-box; padding:22px; display:grid; grid-template-rows:auto 1fr auto; background:
+      radial-gradient(1200px 700px at 90% -10%, rgba(255,255,255,0.12), transparent 50%),
+      linear-gradient(135deg, ${bg} 0%, #1f2937 100%);">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <div style="display:inline-flex; gap:8px; align-items:center; font-size:12px; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,0.14);">${String(
+          args.plan.intent.platform
+        )} • ${String(args.plan.intent.format)}</div>
+        <div style="width:40px;height:40px;border-radius:8px;background:${primary};display:flex;align-items:center;justify-content:center;color:white;font-weight:800;">AI</div>
+      </div>
+      <section style="display:grid; grid-template-columns: 1.1fr 0.9fr; gap:20px; align-items:center;">
+        <div>
+          <h1 style="margin:0 0 10px; font-size:54px; line-height:1.02; letter-spacing:-0.02em;">${title}</h1>
+          <p style="margin:0; opacity:.92; font-size:20px; line-height:1.35;">Join our team to build impactful AI systems and solve real-world product challenges.</p>
+        </div>
+        <div style="border:1px solid rgba(255,255,255,0.18); border-radius:14px; padding:16px; background:rgba(255,255,255,0.06);">
+          <div style="font-size:14px; opacity:.9; margin-bottom:10px;">Why join us</div>
+          <ul style="margin:0; padding-left:18px; display:grid; gap:8px; font-size:14px;">
+            <li>Work on production AI features</li>
+            <li>Strong mentorship and learning</li>
+            <li>Competitive pay and flexibility</li>
+          </ul>
+        </div>
+      </section>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button style="background:${primary}; color:white; border:0; border-radius:10px; padding:12px 18px; font-weight:700;">Apply now</button>
+        <button style="background:${accent}; color:white; border:0; border-radius:10px; padding:12px 18px; font-weight:700;">Learn more</button>
+      </div>
+    </main>
+  </body>
+</html>`;
+
+  return attemptPostProcess(fallbackHtml);
+}
+
 // Used by the Anthropic Batch API worker to persist a finished Claude response
 // into `Design` + `DesignVersion` + `GenerationLog`, matching the non-stream path.
 export async function persistSingleDesignFromPlannedBatchResult(args: {
@@ -274,32 +403,17 @@ export async function persistSingleDesignFromPlannedBatchResult(args: {
     },
   });
 
-  const repaired = await postProcessHtml({
-    html: html.trim(),
-    intent: plan.intent,
+  const repaired = await postProcessWithEmptyFallback({
+    html,
+    plan,
     brand: {
       name: brand.name,
       typography: brand.typography as any,
       colors: brand.colors as any,
     },
-    abModifiers: {
-      headlineSizeMultiplier: plan.abMergedContext?.headlineSizeModifier,
-      spacingMultiplier: plan.abMergedContext?.spacingModifier,
-    },
-    repairMalformedHtml: async (malformedHtml) => {
-      const repairResponse = await callAnthropicWithRetry(
-        {
-          model: AI_MODELS.GENERATOR_SONNET,
-          system: "The following HTML is malformed. Fix the structural issues and return the corrected complete HTML.",
-          max_tokens: plan.maxTokens,
-          messages: [{ role: "user", content: [{ type: "text", text: malformedHtml }] }],
-        },
-        { userId, designId: design.id }
-      );
-      return repairResponse.content[0]?.type === "text"
-        ? repairResponse.content[0].text.trim()
-        : malformedHtml;
-    },
+    userId,
+    designId: design.id,
+    userPrompt: remainingPrompt,
   });
 
   const cachedTokens =
@@ -802,7 +916,12 @@ export async function streamGenerateDesign(
       lastError = err;
       const status = err?.status ?? err?.response?.status;
       const code = err?.error?.type ?? err?.code;
-      const shouldRetry = status === 429 || status === 529 || code === "rate_limit_error";
+      const shouldRetry =
+        status === 429 ||
+        status === 529 ||
+        code === "rate_limit_error" ||
+        code === "AI_NETWORK_ERROR" ||
+        code === "AI_SERVICE_UNAVAILABLE";
       if (!shouldRetry || attempt === delays.length - 1) break;
       await cb.onStatus?.({
         designId: design.id,
@@ -827,34 +946,17 @@ export async function streamGenerateDesign(
     throw err;
   }
 
-  const repaired = await postProcessHtml({
-    html: fullHtml.trim(),
-    intent: plan.intent,
-    brand,
-    abModifiers: {
-      headlineSizeMultiplier: plan.abMergedContext?.headlineSizeModifier,
-      spacingMultiplier: plan.abMergedContext?.spacingModifier,
+  const repaired = await postProcessWithEmptyFallback({
+    html: fullHtml,
+    plan,
+    brand: {
+      name: brand.name,
+      typography: brand.typography as any,
+      colors: brand.colors as any,
     },
-    repairMalformedHtml: async (malformedHtml) => {
-      const repairResponse = await callAnthropicWithRetry(
-        {
-          model: AI_MODELS.GENERATOR_SONNET,
-          system:
-            "The following HTML is malformed. Fix the structural issues and return the corrected complete HTML.",
-          max_tokens: plan.maxTokens,
-          messages: [
-            {
-              role: "user",
-              content: [{ type: "text", text: malformedHtml }],
-            },
-          ],
-        },
-        { userId, designId: design.id }
-      );
-      return repairResponse.content[0]?.type === "text"
-        ? repairResponse.content[0].text.trim()
-        : malformedHtml;
-    },
+    userId,
+    designId: design.id,
+    userPrompt: remainingPrompt,
   });
 
   const placeholderMatches = repaired.html.match(/<img[^>]*data-placeholder="true"[^>]*>/gi) ?? [];
@@ -1121,7 +1223,12 @@ export async function streamReviseDesign(
       reviseLastError = err;
       const status = err?.status ?? err?.response?.status;
       const code = err?.error?.type ?? err?.code;
-      const shouldRetry = status === 429 || status === 529 || code === "rate_limit_error";
+      const shouldRetry =
+        status === 429 ||
+        status === 529 ||
+        code === "rate_limit_error" ||
+        code === "AI_NETWORK_ERROR" ||
+        code === "AI_SERVICE_UNAVAILABLE";
       if (!shouldRetry || attempt === reviseDelays.length - 1) {
         await prisma.design.update({
           where: { id: design.id },

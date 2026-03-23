@@ -38,6 +38,11 @@ function parseSseChunk(chunk: string): SsePayload[] {
   return events;
 }
 
+function isSocialPlatform(platform: unknown): boolean {
+  const p = String(platform ?? "").toLowerCase();
+  return p === "instagram" || p === "linkedin" || p === "facebook" || p === "twitter";
+}
+
 export function useDesignGeneration() {
   const abortRef = useRef<AbortController | null>(null);
   const throttleTimerRef = useRef<number | null>(null);
@@ -53,6 +58,7 @@ export function useDesignGeneration() {
     setActiveVersionNumber,
     setLastGenerationMeta,
     setLastPrompt,
+    setVersionHistory,
     streamedHtml,
   } = useWorkspaceStore((s) => s);
 
@@ -117,6 +123,8 @@ export function useDesignGeneration() {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
+        let sawComplete = false;
+        let completedDesignId: string | null = null;
         setGenerationState("generating");
 
         while (true) {
@@ -148,7 +156,12 @@ export function useDesignGeneration() {
               });
             } else if (evt.event === "chunk") {
               appendStreamChunk(evt.data.html ?? "");
-              schedulePreviewFlush();
+              // Social canvases are fixed-size and look broken while partial HTML streams in.
+              // Show final render on "complete" instead of flickering half-built markup.
+              const platformNow = useWorkspaceStore.getState().lastGenerationMeta?.platform;
+              if (!isSocialPlatform(platformNow)) {
+                schedulePreviewFlush();
+              }
             } else if (evt.event === "image_start") {
               setStatusMessage("Sourcing images...");
               setGenerationState("processing_images");
@@ -187,6 +200,8 @@ export function useDesignGeneration() {
               const html = String(evt.data.screenHtml ?? "");
               if (html) setPreviewHtml(html);
             } else if (evt.event === "complete") {
+              sawComplete = true;
+              completedDesignId = evt.data.designId ?? null;
               if (evt.data.versionNumber) {
                 setActiveVersionNumber(evt.data.versionNumber);
               }
@@ -218,8 +233,22 @@ export function useDesignGeneration() {
         }
 
         // Final flush to ensure any remaining chunk content appears.
-        if (useWorkspaceStore.getState().streamedHtml !== streamedHtml) {
+        if (!sawComplete && useWorkspaceStore.getState().streamedHtml !== streamedHtml) {
           setPreviewHtml(useWorkspaceStore.getState().streamedHtml);
+        }
+
+        // Keep version list in sync after successful generation.
+        if (sawComplete && completedDesignId) {
+          try {
+            const designRes = await fetch(`/api/design/${completedDesignId}`);
+            const designJson = await designRes.json();
+            if (designRes.ok && designJson?.success) {
+              const versions = (designJson.data?.versions ?? []) as any[];
+              setVersionHistory(versions);
+            }
+          } catch {
+            // non-fatal
+          }
         }
       } catch (err: any) {
         if (err?.name === "AbortError") return;
@@ -246,6 +275,7 @@ export function useDesignGeneration() {
       schedulePreviewFlush,
       setPreviewHtml,
       setActiveVersionNumber,
+      setVersionHistory,
       streamedHtml,
       setLastPrompt,
     ]

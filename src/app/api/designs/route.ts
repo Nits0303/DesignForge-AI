@@ -26,6 +26,7 @@ export async function GET(req: Request) {
     const where: any = { userId };
     if (platform) where.platform = platform;
     if (status) where.status = status;
+    else where.status = { not: "archived" };
     if (projectId) where.projectId = projectId;
     if (search) {
       where.OR = [

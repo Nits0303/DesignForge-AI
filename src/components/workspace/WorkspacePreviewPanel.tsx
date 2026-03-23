@@ -27,6 +27,102 @@ type SlideMode = "single" | "carousel" | "multi-screen";
 
 const SOCIAL_PLATFORMS = new Set(["instagram", "linkedin", "facebook", "twitter"]);
 
+function injectIframeResetAndRoot(html: string, viewportWidthPx?: number, forceShrinkToFit = false): string {
+  const responsiveViewportCss =
+    viewportWidthPx && viewportWidthPx > 0
+      ? `@media (max-width:${viewportWidthPx}px){html,body,#design-root{overflow-x:hidden!important;max-width:100%!important;}}`
+      : "";
+  const shrinkToFitScript = forceShrinkToFit
+    ? `<script data-designforge-shrink-fit="1">
+(function(){
+  function fit(){
+    try {
+      var root = document.getElementById("design-root");
+      if (!root) return;
+      root.style.transform = "";
+      root.style.transformOrigin = "top left";
+      root.style.width = "100%";
+      root.style.height = "auto";
+      var docEl = document.documentElement;
+      var sw = Math.max(
+        docEl ? docEl.scrollWidth : 0,
+        document.body ? document.body.scrollWidth : 0,
+        root.scrollWidth || 0
+      );
+      var vw = Math.max(window.innerWidth || 0, docEl ? docEl.clientWidth : 0, 1);
+      var scale = sw > vw ? (vw / sw) : 1;
+      if (scale < 1) {
+        root.style.width = sw + "px";
+        root.style.transform = "scale(" + scale + ")";
+      }
+      var rectH = root.getBoundingClientRect ? root.getBoundingClientRect().height : 0;
+      var sh = Math.max(
+        rectH || 0,
+        root.scrollHeight || 0,
+        document.body ? document.body.scrollHeight : 0,
+        docEl ? docEl.scrollHeight : 0
+      );
+      var height = Math.ceil(sh);
+      try { window.parent.postMessage({ __designforge: "auto_height", height: height }, "*"); } catch(_) {}
+    } catch(_) {}
+  }
+  window.addEventListener("load", fit);
+  window.addEventListener("resize", fit);
+  setTimeout(fit, 0);
+  setTimeout(fit, 150);
+  setTimeout(fit, 500);
+})();
+</script>`
+    : "";
+  const resetCss = `<style data-designforge-preview-reset="1">
+html, body { margin: 0; padding: 0; background: transparent; }
+body { overflow: visible; }
+#design-root { margin: 0; padding: 0; display: block; width: 100%; height: auto; min-height: 0; }
+${responsiveViewportCss}
+</style>`;
+  const suppressTailwindCdnWarning = `<script data-designforge-tailwind-warn-filter="1">
+(function(){
+  try {
+    var pat = /cdn\\.tailwindcss\\.com should not be used in production/i;
+    var ow = console.warn ? console.warn.bind(console) : null;
+    if (ow) {
+      console.warn = function() {
+        try {
+          var msg = arguments && arguments[0] != null ? String(arguments[0]) : "";
+          if (pat.test(msg)) return;
+        } catch(_) {}
+        return ow.apply(console, arguments);
+      };
+    }
+  } catch(_) {}
+})();
+</script>`;
+
+  const source = html && html.trim().length ? html : "<div></div>";
+
+  // Full document: inject into <head> and wrap body contents once.
+  if (/<html[\s>]/i.test(source) && /<body[\s>]/i.test(source)) {
+    let out = source;
+    if (!/data-designforge-preview-reset="1"/i.test(out)) {
+      if (/<head[^>]*>/i.test(out)) {
+        out = out.replace(/<head([^>]*)>/i, `<head$1>${resetCss}${suppressTailwindCdnWarning}${shrinkToFitScript}`);
+      } else {
+        out = out.replace(
+          /<html([^>]*)>/i,
+          `<html$1><head>${resetCss}${suppressTailwindCdnWarning}${shrinkToFitScript}</head>`
+        );
+      }
+    }
+    if (!/id="design-root"/i.test(out)) {
+      out = out.replace(/<body([^>]*)>([\s\S]*?)<\/body>/i, `<body$1><div id="design-root">$2</div></body>`);
+    }
+    return out;
+  }
+
+  // Fragment: create a complete srcdoc shell.
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${resetCss}${suppressTailwindCdnWarning}${shrinkToFitScript}</head><body><div id="design-root">${source}</div></body></html>`;
+}
+
 export function WorkspacePreviewPanel({
   layout = "desktop",
 }: {
@@ -123,10 +219,13 @@ export function WorkspacePreviewPanel({
   const isWebOrDash = platform === "website" || platform === "dashboard";
   const isMobile = platform === "mobile";
 
-  // Default multi-breakpoint view for website designs.
+  // Website preview should open as a single desktop canvas.
   useEffect(() => {
-    if (platform === "website") setResponsiveMode(true);
-  }, [platform]);
+    if (platform === "website") {
+      setResponsiveMode(false);
+      setBreakpoint("desktop");
+    }
+  }, [platform, setBreakpoint]);
 
   const dimensions = useMemo(() => {
     if (isMobile) {
@@ -174,7 +273,7 @@ export function WorkspacePreviewPanel({
     if (!el) return;
     const compute = () => {
       const rect = el.getBoundingClientRect();
-      const padding = 48;
+      const padding = 0;
       const availableW = Math.max(rect.width - padding, 1);
       const availableH = Math.max(rect.height - padding, 1);
       const baseScale = Math.min(availableW / fitBoxW, availableH / fitBoxH, 1);
@@ -229,9 +328,29 @@ export function WorkspacePreviewPanel({
   // Platform spec info
   const platformSpec = PLATFORM_SPECS[platform];
   const specDims = platformSpec?.defaultDimensions?.[format] ?? dimensions;
+  const renderScale = previewMode === "fit" ? fitScale * zoomLevel : zoomLevel;
+  const frameBoxW = Math.max(1, Math.round(fitBoxW * renderScale));
+  const frameBoxH = Math.max(1, Math.round(fitBoxH * renderScale));
+  const designDoc = useMemo(
+    () =>
+      injectIframeResetAndRoot(
+        sanitizeHtmlForIframe(effectiveHtml || "<div></div>"),
+        isWebOrDash ? iframeWidth : undefined
+        ,
+        isWebOrDash && breakpoint !== "desktop"
+      ),
+    [effectiveHtml, iframeWidth, isWebOrDash, breakpoint]
+  );
 
   const sectionPlan = (lastGenerationMeta as any)?.sectionPlan as string[] | undefined;
   const hasSectionNav = isWebOrDash && Array.isArray(sectionPlan) && sectionPlan.length >= 4;
+
+  const resetViewportTop = () => {
+    const el = artboardRef.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    el.scrollLeft = 0;
+  };
 
   return (
     <div
@@ -325,22 +444,18 @@ export function WorkspacePreviewPanel({
         </div>
       )}
 
-      {/* Responsive toggle for web/dashboard */}
-      {isWebOrDash && (
-        <div className="absolute bottom-28 right-3 z-20">
-          <Button
-            size="sm"
-            variant={responsiveMode ? "default" : "secondary"}
-            onClick={() => setResponsiveMode((v) => !v)}
-          >
-            Responsive
-          </Button>
-        </div>
-      )}
-
       {/* Main artboard */}
-      <div ref={artboardRef} className="flex-1 overflow-auto bg-[hsl(var(--background))] p-6">
-        <div className="flex min-h-full items-center justify-center">
+      <div
+        ref={artboardRef}
+        className={`flex-1 bg-[hsl(var(--background))] p-0 ${isWebOrDash ? "overflow-y-auto overflow-x-hidden" : "overflow-hidden"}`}
+      >
+        <div
+          className={`flex h-full w-full justify-center ${
+            previewMode === "actual" && isWebOrDash
+              ? "items-start"
+              : "items-center"
+          } ${isWebOrDash ? "overflow-x-hidden" : "overflow-hidden"}`}
+        >
           {isLoading && !previewHtml ? (
             <div className="flex flex-col items-center gap-3">
               <div
@@ -406,23 +521,19 @@ export function WorkspacePreviewPanel({
             </div>
           ) : (
             <div
-              className={`overflow-hidden transition-all duration-200 ${
+              className={`relative overflow-hidden transition-all duration-200 ${
                 flashBorder ? "workspace-version-flash" : ""
-              } ${
-                isMobile
-                  ? "border-0 bg-transparent shadow-none"
-                  : "rounded border border-[hsl(var(--border))] bg-white"
               }`}
-              style={{
-                width: isMobile ? "auto" : iframeWidth,
-                height: isMobile ? "auto" : displayedIframeHeight,
-                transform:
-                  previewMode === "fit"
-                    ? `scale(${fitScale * zoomLevel})`
-                    : `scale(${1})`,
-                transformOrigin: "top center",
-              }}
+              style={{ width: frameBoxW, height: frameBoxH }}
             >
+              <div
+                style={{
+                  width: fitBoxW,
+                  height: fitBoxH,
+                  transform: `scale(${renderScale})`,
+                  transformOrigin: "top left",
+                }}
+              >
               {isMobile ? (
                 mobilePreset.os === "android" ? (
                   <AndroidFrame width={iframeWidth} height={iframeHeight}>
@@ -436,7 +547,7 @@ export function WorkspacePreviewPanel({
                           title="Design preview"
                           ref={mainIframeRef}
                           sandbox="allow-scripts"
-                          srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                          srcDoc={designDoc}
                           className="absolute inset-0 border-0"
                           style={{ width: "100%", height: "100%", display: "block" }}
                         />
@@ -455,7 +566,7 @@ export function WorkspacePreviewPanel({
                           title="Design preview"
                           ref={mainIframeRef}
                           sandbox="allow-scripts"
-                          srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                          srcDoc={designDoc}
                           className="absolute inset-0 border-0"
                           style={{ width: "100%", height: "100%", display: "block" }}
                         />
@@ -474,7 +585,7 @@ export function WorkspacePreviewPanel({
                           title="Design preview"
                           ref={mainIframeRef}
                           sandbox="allow-scripts"
-                          srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                          srcDoc={designDoc}
                           className="absolute inset-0 border-0"
                           style={{ width: "100%", height: "100%", display: "block" }}
                         />
@@ -499,17 +610,21 @@ export function WorkspacePreviewPanel({
                       title="Design preview"
                       ref={mainIframeRef}
                       sandbox="allow-scripts"
-                      srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
+                      srcDoc={designDoc}
                       className="border-0"
                       style={{
-                        width: iframeWidth,
-                        height: platform === "dashboard" ? displayedIframeHeight - 34 : displayedIframeHeight,
+                        width: `${iframeWidth}px`,
+                        minWidth: `${iframeWidth}px`,
+                        maxWidth: `${iframeWidth}px`,
+                        height: `${displayedIframeHeight}px`,
+                        overflowX: "hidden",
                         display: "block",
                       }}
                     />
                   </PreviewErrorBoundary>
                 </>
               )}
+              </div>
             </div>
           )}
         </div>
@@ -612,10 +727,26 @@ export function WorkspacePreviewPanel({
 
       {/* Zoom / fit controls */}
       <div className="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-2">
-        <Button size="sm" variant={previewMode === "fit" ? "default" : "secondary"} onClick={() => setPreviewMode("fit")}>
+        <Button
+          size="sm"
+          variant={previewMode === "fit" ? "default" : "secondary"}
+          onClick={() => {
+            setPreviewMode("fit");
+            setZoomLevel(1);
+            resetViewportTop();
+          }}
+        >
           Fit
         </Button>
-        <Button size="sm" variant={previewMode === "actual" ? "default" : "secondary"} onClick={() => setPreviewMode("actual")}>
+        <Button
+          size="sm"
+          variant={previewMode === "actual" ? "default" : "secondary"}
+          onClick={() => {
+            setPreviewMode("actual");
+            setZoomLevel(1);
+            resetViewportTop();
+          }}
+        >
           100%
         </Button>
         <span className="px-1 text-xs text-[hsl(var(--muted-foreground))]">
@@ -625,20 +756,24 @@ export function WorkspacePreviewPanel({
         <Button size="sm" variant="secondary" onClick={() => setZoomLevel(zoomLevel + 0.1)}>+</Button>
       </div>
 
-      {/* Breakpoint controls for web/dash */}
+      {/* Breakpoint controls for website/dashboard */}
       {isWebOrDash ? (
-        <div className="absolute bottom-14 right-3 z-10 flex gap-2 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-2">
+        <div className="absolute bottom-3 left-3 z-10 flex gap-2 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-2">
           <Button size="sm" variant={breakpoint === "desktop" ? "default" : "secondary"} onClick={() => setBreakpoint("desktop")}>
+            <Monitor className="mr-1 h-4 w-4" />
             Desktop
           </Button>
           <Button size="sm" variant={breakpoint === "tablet" ? "default" : "secondary"} onClick={() => setBreakpoint("tablet")}>
+            <Tablet className="mr-1 h-4 w-4" />
             Tablet
           </Button>
           <Button size="sm" variant={breakpoint === "mobile" ? "default" : "secondary"} onClick={() => setBreakpoint("mobile")}>
+            <Smartphone className="mr-1 h-4 w-4" />
             Mobile
           </Button>
         </div>
       ) : null}
+
     </div>
   );
 }

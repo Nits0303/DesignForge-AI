@@ -146,6 +146,19 @@ export function interpretGeminiFailure(err: unknown): {
     };
   }
 
+  const isNetwork =
+    /fetch failed|failed to fetch|networkerror|econnreset|enotfound|eai_again|timed out|timeout|dns/i.test(
+      lower
+    );
+  if (isNetwork) {
+    return {
+      code: "AI_NETWORK_ERROR",
+      message:
+        "Network error while reaching Gemini. Check internet/VPN/proxy/firewall and allow generativelanguage.googleapis.com, then retry.",
+      retryable: true,
+    };
+  }
+
   if (process.env.AI_DEBUG === "true") {
     console.error("[Gemini]", { status, text, err });
   }
@@ -233,7 +246,7 @@ export async function callGeminiWithRetry(
   },
   opts: { userId: string; designId?: string | null }
 ): Promise<Messages.Message> {
-  const delays = [1000, 3000, 9000];
+  const delays = [1000, 3000, 9000, 20000];
 
   for (let attempt = 0; attempt < delays.length; attempt++) {
     try {
@@ -248,8 +261,7 @@ export async function callGeminiWithRetry(
       );
     } catch (err: unknown) {
       const interp = interpretGeminiFailure(err);
-      const shouldRetryAttempt =
-        interp.code === "AI_RATE_LIMIT_EXCEEDED" && attempt < delays.length - 1;
+      const shouldRetryAttempt = interp.retryable && attempt < delays.length - 1;
       if (shouldRetryAttempt) {
         await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
         continue;

@@ -39,8 +39,105 @@ const FILTERS = [
 ];
 
 type Props = {
-  onInsertHint?: (hint: { templateId: string; tags: string[]; category: string }) => void;
+  onInsertHint?: (hint: { templateId: string; templateName: string; tags: string[]; category: string }) => void;
 };
+
+function buildTemplatePreviewSrcDoc(snippet: string, mode: "card" | "modal" = "modal"): string {
+  const source = (snippet ?? "").trim();
+  if (!source) return "<!doctype html><html><body></body></html>";
+  const isCardMode = mode === "card";
+
+  const resetAndVars = `<style>
+html, body { margin:0; padding:0; background:#ffffff; color:#0f172a; }
+* { box-sizing:border-box; }
+:root {
+  --accent: 245 83% 66%;
+  --accent-foreground: 0 0% 100%;
+  --accent-hover: 245 83% 60%;
+  --border: 220 20% 85%;
+  --border-accent: 245 83% 66%;
+  --background: 220 35% 98%;
+  --surface: 0 0% 100%;
+  --surface-elevated: 220 20% 96%;
+  --foreground: 224 35% 12%;
+  --muted-foreground: 220 15% 45%;
+  --success: 142 72% 29%;
+}
+body {
+  overflow:${isCardMode ? "hidden" : "auto"};
+  ${isCardMode ? "display:flex;align-items:center;justify-content:center;" : ""}
+}
+#preview-stage {
+  ${isCardMode ? "width:100vw;height:100vh;display:flex;align-items:center;justify-content:center;overflow:hidden;" : "display:block;"}
+}
+</style>`;
+
+  const suppressTailwindWarning = `<script>
+(function(){
+  try {
+    var p = /cdn\\.tailwindcss\\.com should not be used in production/i;
+    var w = console.warn ? console.warn.bind(console) : null;
+    if (w) {
+      console.warn = function() {
+        try {
+          var m = arguments && arguments[0] != null ? String(arguments[0]) : "";
+          if (p.test(m)) return;
+        } catch(_) {}
+        return w.apply(console, arguments);
+      };
+    }
+  } catch(_) {}
+})();
+</script>`;
+
+  const fitCardScript = isCardMode
+    ? `<script>
+(function(){
+  function fit() {
+    try {
+      var stage = document.getElementById("preview-stage");
+      if (!stage) return;
+      var root = stage.firstElementChild;
+      if (!root) return;
+      root.style.transform = "";
+      root.style.transformOrigin = "center center";
+      var sw = root.scrollWidth || root.clientWidth || 1;
+      var sh = root.scrollHeight || root.clientHeight || 1;
+      var vw = window.innerWidth || 1;
+      var vh = window.innerHeight || 1;
+      var scale = Math.min(vw / sw, vh / sh, 1);
+      root.style.transform = "scale(" + scale + ")";
+    } catch(_) {}
+  }
+  window.addEventListener("load", fit);
+  window.addEventListener("resize", fit);
+  setTimeout(fit, 0);
+  setTimeout(fit, 120);
+})();
+</script>`
+    : "";
+
+  if (/<html[\s>]/i.test(source) && /<body[\s>]/i.test(source)) {
+    let out = source;
+    if (/<head[^>]*>/i.test(out)) {
+      out = out.replace(
+        /<head([^>]*)>/i,
+        `<head$1>${resetAndVars}${suppressTailwindWarning}<script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>${fitCardScript}`
+      );
+    } else {
+      out = out.replace(
+        /<html([^>]*)>/i,
+        `<html$1><head>${resetAndVars}${suppressTailwindWarning}<script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>${fitCardScript}</head>`
+      );
+    }
+    if (!/<div id="preview-stage">/i.test(out)) {
+      out = out.replace(/<body([^>]*)>([\s\S]*?)<\/body>/i, `<body$1><div id="preview-stage">$2</div></body>`);
+    }
+    return out;
+  }
+
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${resetAndVars}${suppressTailwindWarning}<script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>${fitCardScript}</head><body><div id="preview-stage">${source}</div></body></html>`;
+}
 
 export function TemplateBrowser({ onInsertHint }: Props) {
   const [search, setSearch] = useState("");
@@ -79,8 +176,9 @@ export function TemplateBrowser({ onInsertHint }: Props) {
         const json = await res.json();
         if (json.success && json.data?.installations) {
           const installed = (json.data.installations as { template: Template }[]).map((r) => r.template);
-          setLibraryInstalled(installed);
-          setLibraryOpen(installed.length <= 10);
+          const installedUnique = Array.from(new Map(installed.map((t) => [t.id, t])).values());
+          setLibraryInstalled(installedUnique);
+          setLibraryOpen(installedUnique.length <= 10);
         }
       } catch {
         // ignore
@@ -113,7 +211,9 @@ export function TemplateBrowser({ onInsertHint }: Props) {
   }, [debouncedSearch, tierFilter, platformFilter, page]);
 
   const installedIds = new Set(libraryInstalled.map((t) => t.id));
-  const items = (data?.items ?? []).filter((t) => !installedIds.has(t.id));
+  const items = Array.from(new Map((data?.items ?? []).map((t) => [t.id, t])).values()).filter(
+    (t) => !installedIds.has(t.id)
+  );
 
   return (
     <div className="flex h-full flex-col border-l border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
@@ -205,6 +305,12 @@ export function TemplateBrowser({ onInsertHint }: Props) {
                           alt={tpl.name}
                           className="h-16 w-full rounded-sm object-cover"
                         />
+                      ) : tpl.htmlSnippet ? (
+                        <iframe
+                          title={tpl.name}
+                          srcDoc={buildTemplatePreviewSrcDoc(tpl.htmlSnippet, "card")}
+                          className="h-16 w-full rounded-sm border-0 bg-white"
+                        />
                       ) : (
                         <span>{tpl.category}</span>
                       )}
@@ -234,6 +340,12 @@ export function TemplateBrowser({ onInsertHint }: Props) {
                     alt={tpl.name}
                     className="h-16 w-full rounded-sm object-cover"
                   />
+                ) : tpl.htmlSnippet ? (
+                  <iframe
+                    title={tpl.name}
+                    srcDoc={buildTemplatePreviewSrcDoc(tpl.htmlSnippet, "card")}
+                    className="h-16 w-full rounded-sm border-0 bg-white"
+                  />
                 ) : (
                   <span>{tpl.category}</span>
                 )}
@@ -242,9 +354,9 @@ export function TemplateBrowser({ onInsertHint }: Props) {
                 {tpl.name}
               </div>
               <div className="mt-1 flex flex-wrap gap-0.5">
-                {tpl.tags.slice(0, 4).map((tag) => (
+                {tpl.tags.slice(0, 4).map((tag, idx) => (
                   <span
-                    key={tag}
+                    key={`${tpl.id}-${tag}-${idx}`}
                     className="rounded-full bg-[hsl(var(--background))] px-1.5 py-0.5 text-[9px] text-[hsl(var(--muted-foreground))]"
                   >
                     {tag}
@@ -272,9 +384,9 @@ export function TemplateBrowser({ onInsertHint }: Props) {
       </div>
 
       <Dialog open={!!selected} onOpenChange={() => setSelected(null)}>
-        <DialogContent className="max-w-2xl border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
+        <DialogContent className="w-[92vw] max-w-[92vw] h-[88vh] max-h-[88vh] border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
           {selected && (
-            <div className="space-y-3">
+            <div className="flex h-full flex-col space-y-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1 space-y-1">
                   <DialogTitle className="text-base">{selected.name}</DialogTitle>
@@ -288,9 +400,9 @@ export function TemplateBrowser({ onInsertHint }: Props) {
               </div>
 
               <div className="flex flex-wrap gap-1">
-                {selected.tags.map((tag) => (
+                {selected.tags.map((tag, idx) => (
                   <span
-                    key={tag}
+                    key={`${selected.id}-${tag}-${idx}`}
                     className="rounded-full bg-[hsl(var(--surface-elevated))] px-2 py-0.5 text-[10px] text-[hsl(var(--muted-foreground))]"
                   >
                     {tag}
@@ -298,19 +410,19 @@ export function TemplateBrowser({ onInsertHint }: Props) {
                 ))}
               </div>
 
-              <div className="h-64 overflow-hidden rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))]">
+              <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))]">
                 {selected.previewUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={selected.previewUrl}
                     alt={selected.name}
-                    className="h-full w-full object-cover"
+                    className="h-full w-full object-contain"
                   />
                 ) : selected.htmlSnippet ? (
                   <iframe
                     title={selected.name}
-                    srcDoc={selected.htmlSnippet}
-                    className="h-full w-full border-0"
+                    srcDoc={buildTemplatePreviewSrcDoc(selected.htmlSnippet, "modal")}
+                    className="h-full w-full border-0 bg-white"
                   />
                 ) : (
                   <div className="flex h-full items-center justify-center text-xs text-[hsl(var(--muted-foreground))]">
@@ -326,6 +438,7 @@ export function TemplateBrowser({ onInsertHint }: Props) {
                     if (onInsertHint && selected) {
                       onInsertHint({
                         templateId: selected.id,
+                        templateName: selected.name,
                         tags: selected.tags,
                         category: selected.category,
                       });

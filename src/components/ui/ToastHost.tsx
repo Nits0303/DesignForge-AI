@@ -21,7 +21,7 @@ export function ToastHost() {
 function ToastItem({
   toast,
 }: {
-  toast: { id: string; title: string; description?: string; type?: string };
+  toast: { id: string; title: string; description?: string; type?: string; actionLabel?: string; onAction?: () => void };
 }) {
   const removeToast = useUIStore((s) => s.removeToast);
 
@@ -40,6 +40,18 @@ function ToastItem({
           <div className="font-semibold text-[hsl(var(--foreground))]">{toast.title}</div>
           {toast.description ? (
             <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{toast.description}</div>
+          ) : null}
+          {toast.actionLabel && toast.onAction ? (
+            <button
+              type="button"
+              className="mt-2 text-xs font-semibold text-[hsl(var(--accent))] underline"
+              onClick={() => {
+                toast.onAction?.();
+                removeToast(toast.id);
+              }}
+            >
+              {toast.actionLabel}
+            </button>
           ) : null}
         </div>
         <button

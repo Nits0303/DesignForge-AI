@@ -84,10 +84,14 @@ function platformIcon(platform: string) {
 export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"platform" | "format">("platform");
+  const [isTextareaFocused, setIsTextareaFocused] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const platformListRef = useRef<HTMLDivElement | null>(null);
+  const formatListRef = useRef<HTMLDivElement | null>(null);
+  const activeItemRef = useRef<HTMLButtonElement | null>(null);
   const [selectedPlatform, setSelectedPlatform] = useState<ShortcodeDef | null>(null);
 
   const triggerInfo = useMemo(() => {
@@ -114,7 +118,7 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
   }, [selectedPlatform]);
 
   useEffect(() => {
-    if (!textareaRef.current || !triggerInfo) {
+    if (!textareaRef.current || !triggerInfo || !isTextareaFocused) {
       setOpen(false);
       setSelectedPlatform(null);
       setMode("platform");
@@ -125,7 +129,22 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
     setOpen(true);
     setMode(selectedPlatform ? "format" : "platform");
     setActiveIndex(0);
-  }, [triggerInfo, selectedPlatform]);
+  }, [triggerInfo, selectedPlatform, isTextareaFocused]);
+
+  useEffect(() => {
+    if (value.trim().length > 0) return;
+    setOpen(false);
+    setSelectedPlatform(null);
+    setMode("platform");
+  }, [value]);
+
+  useEffect(() => {
+    if (!open) return;
+    const listEl = mode === "platform" ? platformListRef.current : formatListRef.current;
+    const activeEl = activeItemRef.current;
+    if (!listEl || !activeEl) return;
+    activeEl.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, mode, open]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -134,6 +153,7 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
         setOpen(false);
         setSelectedPlatform(null);
         setMode("platform");
+        setIsTextareaFocused(false);
       }
     }
     if (!open) return;
@@ -204,6 +224,15 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
         ref={textareaRef}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setIsTextareaFocused(true)}
+        onBlur={() => {
+          window.setTimeout(() => {
+            setOpen(false);
+            setSelectedPlatform(null);
+            setMode("platform");
+            setIsTextareaFocused(false);
+          }, 150);
+        }}
         onKeyDown={handleKeyDown}
         rows={4}
         className="w-full resize-none rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-3 py-2 text-sm text-[hsl(var(--foreground))] placeholder:text-[hsl(var(--muted-foreground))] focus:outline-none"
@@ -215,11 +244,12 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
           style={{ top: "100%", left: 0 }}
         >
           {mode === "platform" ? (
-            <div className="max-h-64 overflow-y-auto">
+            <div ref={platformListRef} className="max-h-64 overflow-y-auto">
               {platformFiltered.map((item, idx) => (
                 <button
                   key={item.code}
                   type="button"
+                  ref={idx === activeIndex ? activeItemRef : null}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     const next = replaceFragment(item.code + " ");
@@ -254,7 +284,7 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
               ))}
             </div>
           ) : (
-            <div className="max-h-48 overflow-y-auto">
+            <div ref={formatListRef} className="max-h-48 overflow-y-auto">
               <div className="flex items-center justify-between px-2 py-1 text-[10px] text-[hsl(var(--muted-foreground))]">
                 <span>{selectedPlatform?.code}</span>
                 <span className="inline-flex items-center gap-1">
@@ -265,6 +295,7 @@ export function ShortcodeAutocomplete({ value, onChange, textareaId }: Props) {
                 <button
                   key={fmt}
                   type="button"
+                  ref={idx === activeIndex ? activeItemRef : null}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     const appended = `${value.trimEnd()} ${fmt} `;

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DesignCard } from "@/components/design/DesignCard";
 import { Button } from "@/components/ui/button";
+import { Trash2 } from "lucide-react";
+import { useUIStore } from "@/store/useUIStore";
 
 const PLATFORM_CHIPS = [
   "all",
@@ -27,7 +29,9 @@ export default function DesignsPage() {
   const [sort, setSort] = useState("newest");
   const [dateRange, setDateRange] = useState("all");
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [fadingOutIds, setFadingOutIds] = useState<Record<string, boolean>>({});
   const endRef = useRef<HTMLDivElement | null>(null);
+  const { enqueueToast } = useUIStore((s) => s);
 
   useEffect(() => {
     let mounted = true;
@@ -82,7 +86,7 @@ export default function DesignsPage() {
   // Thumbnail polling: if any card is still missing its previewUrl, refresh from /api/designs/recent.
   useEffect(() => {
     if (!items.length) return;
-    const anyMissing = items.some((i) => i.previewUrl == null);
+    const anyMissing = items.some((i) => i.previewUrl == null && i.status === "generating");
     if (!anyMissing) return;
 
     const interval = window.setInterval(async () => {
@@ -96,7 +100,7 @@ export default function DesignsPage() {
           prev.map((p) => {
             const match = recents.find((r) => r.id === p.id);
             if (!match) return p;
-            if (p.previewUrl != null) return p;
+            if (p.previewUrl != null || p.status !== "generating") return p;
             return {
               ...p,
               previewUrl: match.previewUrl,
@@ -117,6 +121,8 @@ export default function DesignsPage() {
     () => Object.entries(selected).filter(([, v]) => v).map(([k]) => k),
     [selected]
   );
+  const visibleIds = useMemo(() => items.map((i) => i.id), [items]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => !!selected[id]);
 
   const empty = items.length === 0;
 
@@ -173,6 +179,21 @@ export default function DesignsPage() {
           </select>
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
+          <label className="inline-flex items-center gap-2 rounded-full bg-[hsl(var(--surface-elevated))] px-3 py-1 text-xs text-[hsl(var(--muted-foreground))]">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setSelected((prev) => {
+                  const next = { ...prev };
+                  for (const id of visibleIds) next[id] = checked;
+                  return next;
+                });
+              }}
+            />
+            Select all
+          </label>
           {PLATFORM_CHIPS.map((chip) => (
             <button
               key={chip}
@@ -218,8 +239,8 @@ export default function DesignsPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           {items.map((d) => (
-            <div key={d.id} className="relative">
-              <label className="absolute left-2 top-2 z-10">
+            <div key={d.id} className={`group relative transition-opacity duration-200 ${fadingOutIds[d.id] ? "opacity-0" : "opacity-100"}`}>
+              <label className="absolute left-2 top-2 z-10 rounded bg-black/30 p-1 opacity-0 transition-opacity group-hover:opacity-100">
                 <input
                   type="checkbox"
                   checked={!!selected[d.id]}
@@ -228,6 +249,38 @@ export default function DesignsPage() {
                   }
                 />
               </label>
+              <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover:opacity-100">
+                <details className="relative">
+                  <summary className="cursor-pointer list-none rounded bg-black/30 px-2 py-1 text-xs text-white">...</summary>
+                  <div className="absolute right-0 mt-1 w-32 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-1 shadow">
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-xs text-red-500 hover:bg-[hsl(var(--surface))]"
+                      onClick={async (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        const ids = [d.id];
+                        setFadingOutIds((prev) => ({ ...prev, [d.id]: true }));
+                        window.setTimeout(() => {
+                          setItems((prev) => prev.filter((x) => x.id !== d.id));
+                          setFadingOutIds((prev) => ({ ...prev, [d.id]: false }));
+                        }, 180);
+                        await fetch("/api/designs/bulk", {
+                          method: "DELETE",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ designIds: ids }),
+                        });
+                        enqueueToast({
+                          title: "1 design deleted.",
+                        });
+                      }}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Delete
+                    </button>
+                  </div>
+                </details>
+              </div>
               <DesignCard design={d} />
             </div>
           ))}
@@ -243,27 +296,62 @@ export default function DesignsPage() {
         <div className="fixed bottom-4 left-1/2 z-40 w-[min(720px,92vw)] -translate-x-1/2 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-3">
           <div className="flex items-center justify-between gap-3">
             <div className="text-sm">
-              <span className="font-semibold">{selectedIds.length}</span> selected
+              <span className="font-semibold">{selectedIds.length}</span> design(s) selected
             </div>
             <div className="flex gap-2">
               <Button
                 size="sm"
                 variant="secondary"
                 onClick={async () => {
-                  await Promise.all(
-                    selectedIds.map((id) =>
-                      fetch(`/api/design/${id}`, { method: "DELETE" })
-                    )
-                  );
+                  const ids = [...selectedIds];
+                  setFadingOutIds((prev) => {
+                    const next = { ...prev };
+                    for (const id of ids) next[id] = true;
+                    return next;
+                  });
+                  window.setTimeout(() => {
+                    setItems((prev) => prev.filter((x) => !ids.includes(x.id)));
+                    setFadingOutIds((prev) => {
+                      const next = { ...prev };
+                      for (const id of ids) next[id] = false;
+                      return next;
+                    });
+                  }, 180);
+                  await fetch("/api/designs/bulk", {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ designIds: ids }),
+                  });
                   setSelected({});
-                  setPage(1);
+                  enqueueToast({
+                    title: `${ids.length} design(s) deleted.`,
+                  });
                 }}
+                className="gap-1 border-red-500/40 text-red-500 hover:bg-red-500/10"
               >
-                Archive selected
+                <Trash2 className="h-4 w-4" />
+                Delete Selected
               </Button>
-              <Button size="sm" variant="ghost" disabled>
-                Export selected
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelected({})}
+              >
+                Cancel
               </Button>
+              <button
+                type="button"
+                className="text-xs text-[hsl(var(--accent))] underline"
+                onClick={() =>
+                  setSelected((prev) => {
+                    const next = { ...prev };
+                    for (const id of visibleIds) next[id] = true;
+                    return next;
+                  })
+                }
+              >
+                Select all
+              </button>
             </div>
           </div>
         </div>

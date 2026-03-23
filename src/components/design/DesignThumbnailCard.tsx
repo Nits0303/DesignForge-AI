@@ -41,6 +41,7 @@ export function DesignThumbnailCard({
   promptSnippet,
   status,
 }: Props) {
+  const isGenerating = status === "generating";
   return (
     <div className="group overflow-hidden rounded-[var(--radius-card)] border border-[hsl(var(--border))] bg-[hsl(var(--surface))]">
       {previewUrl ? (
@@ -51,7 +52,7 @@ export function DesignThumbnailCard({
         <div className="relative flex h-28 w-full items-center justify-center bg-[hsl(var(--background))]">
           <div className="absolute inset-x-0 top-0 h-1.5" style={{ backgroundColor: brandPrimaryColor }} />
           <div className="px-3 text-center text-xs text-[hsl(var(--muted-foreground))]">
-            Generating…
+            {isGenerating ? "Generating..." : `${platform} ${format}`}
           </div>
         </div>
       )}
@@ -77,7 +78,7 @@ export function DesignThumbnailCard({
         ) : null}
 
         <div className="mt-2 h-1.5 w-full bg-[hsl(var(--surface-elevated))]">
-          <div className="h-1.5 bg-[hsl(var(--accent))]" style={{ width: previewUrl ? "100%" : "35%" }} />
+          <div className="h-1.5 bg-[hsl(var(--accent))]" style={{ width: previewUrl || !isGenerating ? "100%" : "35%" }} />
         </div>
       </div>
     </div>

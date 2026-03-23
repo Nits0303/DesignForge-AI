@@ -81,6 +81,8 @@ export function WorkspacePromptPanel({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [showProjectOptions, setShowProjectOptions] = useState(false);
+  const [showShortcodesMenu, setShowShortcodesMenu] = useState(false);
+  const shortcodesRef = useRef<HTMLDivElement | null>(null);
 
   const idleHuman =
     DEFERRED_PROJECT_IDLE_MS < 120_000
@@ -90,6 +92,30 @@ export function WorkspacePromptPanel({
   useEffect(() => {
     if (urlProjectId) clearDeferredProject();
   }, [urlProjectId, clearDeferredProject]);
+
+  useEffect(() => {
+    if (!showShortcodesMenu) return;
+
+    function onPointerDown(e: PointerEvent) {
+      const wrap = shortcodesRef.current;
+      if (!wrap) return;
+      const target = e.target;
+      if (target instanceof Node && !wrap.contains(target)) {
+        setShowShortcodesMenu(false);
+      }
+    }
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setShowShortcodesMenu(false);
+    }
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showShortcodesMenu]);
 
   useEffect(() => {
     void (async () => {
@@ -314,11 +340,16 @@ export function WorkspacePromptPanel({
         />
 
         <div className="flex items-center justify-between gap-2">
-          <div className="relative">
-            <details className="group">
-              <summary className="flex cursor-pointer list-none items-center gap-1 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-2 py-1 text-xs text-[hsl(var(--muted-foreground))]">
+          <div className="relative" ref={shortcodesRef}>
+            <button
+              type="button"
+              onClick={() => setShowShortcodesMenu((v) => !v)}
+              className="flex cursor-pointer list-none items-center gap-1 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-2 py-1 text-xs text-[hsl(var(--muted-foreground))]"
+              aria-expanded={showShortcodesMenu}
+            >
                 Shortcodes <ChevronDown className="h-3 w-3" />
-              </summary>
+            </button>
+            {showShortcodesMenu ? (
               <div className="absolute z-30 mt-1 w-36 rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-1">
                 {SHORTCODES.map((s) => (
                   <button
@@ -328,13 +359,14 @@ export function WorkspacePromptPanel({
                     onClick={() => {
                       const next = prompt.startsWith("/") ? prompt : `${s} ${prompt}`.trim();
                       setPrompt(next);
+                      setShowShortcodesMenu(false);
                     }}
                   >
                     {s}
                   </button>
                 ))}
               </div>
-            </details>
+            ) : null}
           </div>
           <div className="text-xs text-[hsl(var(--muted-foreground))]">{remaining} left</div>
         </div>
@@ -1009,7 +1041,23 @@ export function WorkspacePromptPanel({
             >
               <X className="h-4 w-4" />
             </Button>
-            <TemplateBrowser />
+            <TemplateBrowser
+              onInsertHint={({ templateId, templateName, tags, category }) => {
+                const bits = [
+                  `Use template "${templateName}"`,
+                  `(id: ${templateId})`,
+                  `category: ${category}`,
+                  tags.length ? `tags: ${tags.slice(0, 4).join(", ")}` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" • ");
+                const next = prompt.trim().length
+                  ? `${prompt.trim()}\n\n${bits}`
+                  : bits;
+                setPrompt(next.slice(0, MAX_PROMPT_CHARS));
+                setShowTemplateBrowser(false);
+              }}
+            />
           </div>
         </div>
       ) : null}

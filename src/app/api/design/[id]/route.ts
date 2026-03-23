@@ -98,9 +98,8 @@ export async function DELETE(_req: Request, context: { params: Promise<{ id: str
     });
     if (!existing) return fail("NOT_FOUND", "Design not found", 404);
 
-    await prisma.design.update({
+    await prisma.design.delete({
       where: { id },
-      data: { status: "archived" },
     });
 
     await invalidateDesignListCache(userId);

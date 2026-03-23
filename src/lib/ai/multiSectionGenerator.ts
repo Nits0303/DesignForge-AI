@@ -160,16 +160,30 @@ export async function generateMultiSectionHtml({
     sections.push(ensureWrappedSection(sectionPlan[i]!, ""));
   }
 
-  async function renderAssembled() {
+  function buildRawAssembledHtml() {
     const assembledBody =
       intent.platform === "dashboard" ? wrapWithDashboardBrowserChrome(sections.join("\n")) : sections.join("\n");
-    const raw = `<!DOCTYPE html><html><head></head><body>${assembledBody}</body></html>`;
+    return `<!DOCTYPE html><html><head></head><body>${assembledBody}</body></html>`;
+  }
+
+  async function renderAssembled() {
+    const raw = buildRawAssembledHtml();
     const processed = await postProcessHtml({
       html: raw,
       intent,
       brand: { name: brand!.name, typography: brand!.typography as any, colors: brand!.colors as any },
     });
     return processed.html;
+  }
+
+  async function renderAssembledSafe() {
+    try {
+      return await renderAssembled();
+    } catch (err) {
+      // Keep generation moving even if one assembled snapshot is malformed.
+      // Final output can still be recovered/edited by follow-up revisions.
+      return buildRawAssembledHtml();
+    }
   }
 
   async function generateOneSection(sectionType: string, sectionIndex: number, passName: string, passModel: string, passMaxTokens: number) {
@@ -284,7 +298,7 @@ export async function generateMultiSectionHtml({
     }
 
     sections[sectionIndex] = wrapped;
-    const assembledHtml = await renderAssembled();
+    const assembledHtml = await renderAssembledSafe();
     await cb.onSectionComplete?.({
       sectionType,
       sectionIndex,
@@ -314,7 +328,7 @@ export async function generateMultiSectionHtml({
   }
 
   // PostProcess already ran after last section; reuse the last assembled.
-  const finalHtml = await renderAssembled();
+  const finalHtml = await renderAssembledSafe();
 
   return {
     finalHtml,

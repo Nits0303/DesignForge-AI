@@ -27,6 +27,8 @@ export function WorkspaceClient() {
   const setActiveDesignId = useWorkspaceStore((s) => s.setActiveDesignId);
   const setGenerationError = useWorkspaceStore((s) => s.setGenerationError);
   const setActiveSlide = useWorkspaceStore((s) => s.setActiveSlide);
+  const setLastPrompt = useWorkspaceStore((s) => s.setLastPrompt);
+  const setLastGenerationMeta = useWorkspaceStore((s) => s.setLastGenerationMeta);
   const activeVersionNumber = useWorkspaceStore((s) => s.activeVersionNumber);
   const activeSlide = useWorkspaceStore((s) => s.activeSlide);
   const versionHistory = useWorkspaceStore((s) => s.versionHistory);
@@ -49,6 +51,15 @@ export function WorkspaceClient() {
           const versions: any[] = design.versions ?? [];
           setVersionHistory(versions);
           setActiveDesignId(design.id ?? designId);
+          setLastPrompt(design.originalPrompt ?? "");
+          setLastGenerationMeta({
+            platform: design.platform,
+            format: design.format,
+            dimensions: (design.dimensions as any) ?? null,
+            sectionPlan: Array.isArray((design.parsedIntent as any)?.sectionPlan)
+              ? ((design.parsedIntent as any).sectionPlan as string[])
+              : null,
+          });
 
           // Honour versionId URL param or fall back to latest
           const targetVersion = versionIdParam
@@ -81,6 +92,8 @@ export function WorkspaceClient() {
     setActiveVersionNumber,
     setActiveSlide,
     setGenerationError,
+    setLastGenerationMeta,
+    setLastPrompt,
     setPreviewHtml,
     setVersionHistory,
   ]);
@@ -98,7 +111,7 @@ export function WorkspaceClient() {
 
   const layoutCls = useMemo(
     () =>
-      "hidden h-[calc(100vh-56px)] w-full overflow-hidden border-t border-[hsl(var(--border))] md:grid md:grid-cols-[30%_50%_20%]",
+      "hidden h-[calc(100vh-56px)] w-full overflow-hidden border-t border-[hsl(var(--border))] md:grid md:grid-cols-[minmax(0,30%)_minmax(0,50%)_minmax(0,20%)]",
     []
   );
 
@@ -128,15 +141,21 @@ export function WorkspaceClient() {
           </div>
         </div>
         <div className="hidden h-full w-[260px] border-l border-[hsl(var(--border))] bg-[hsl(var(--surface))] sm:block">
-          <WorkspaceRightPanel />
+          <WorkspaceRightPanel layout="mobile" />
         </div>
       </div>
 
       {/* Desktop layout */}
       <div className={layoutCls}>
-        <WorkspacePromptPanel layout="desktop" prompt={prompt} setPrompt={setPrompt} />
-        <WorkspacePreviewPanel layout="desktop" />
-        <WorkspaceRightPanel />
+        <div className="min-w-0 overflow-hidden">
+          <WorkspacePromptPanel layout="desktop" prompt={prompt} setPrompt={setPrompt} />
+        </div>
+        <div className="min-w-0 overflow-hidden">
+          <WorkspacePreviewPanel layout="desktop" />
+        </div>
+        <div className="min-w-0 overflow-hidden">
+          <WorkspaceRightPanel layout="desktop" />
+        </div>
       </div>
 
       {/* Global overlays */}

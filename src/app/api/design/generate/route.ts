@@ -4,8 +4,11 @@ import { prisma } from "@/lib/db/prisma";
 import { checkRateLimit } from "@/lib/redis/rateLimiter";
 import { APP_LIMITS } from "@/constants/limits";
 import { streamGenerateDesign } from "@/lib/ai/generationOrchestrator";
+import { isGeminiPrimaryLlm } from "@/lib/ai/geminiClient";
 
 export const runtime = "nodejs";
+const STALE_GENERATING_MINUTES = 2;
+const IS_DEV = process.env.NODE_ENV !== "production";
 
 const bodySchema = z.object({
   prompt: z.string().min(4),
@@ -103,38 +106,53 @@ export async function POST(req: Request) {
     }
   }
 
-  const rlKey = `generate:${userId}`;
-  const limit = await checkRateLimit(rlKey, {
-    windowSeconds: 60,
-    maxRequests: APP_LIMITS.generationRatePerMinute ?? 30,
-  });
-  if (!limit.allowed) {
-    return new Response(
-      encodeSse({
-        event: "error",
-        data: {
-          code: "RATE_LIMITED",
-          message: "Too many generation requests",
-          retryable: true,
-        },
-      }),
-      {
-        status: 429,
-        headers: { "Content-Type": "text/event-stream" },
-      }
-    );
+  if (!IS_DEV) {
+    const rlKey = `generate:${userId}`;
+    const limit = await checkRateLimit(rlKey, {
+      windowSeconds: 60,
+      maxRequests: APP_LIMITS.generationRatePerMinute ?? 30,
+    });
+    if (!limit.allowed) {
+      return new Response(
+        encodeSse({
+          event: "error",
+          data: {
+            code: "RATE_LIMITED",
+            message: "Too many generation requests",
+            retryable: true,
+          },
+        }),
+        {
+          status: 429,
+          headers: { "Content-Type": "text/event-stream" },
+        }
+      );
+    }
   }
 
-  const inQueue = await prisma.design.count({
-    where: { userId, status: "generating" },
+  // Self-heal stale/inconsistent "generating" rows so users don't get stuck in QUEUE_FULL.
+  const staleCutoff = new Date(Date.now() - STALE_GENERATING_MINUTES * 60 * 1000);
+  await prisma.design.updateMany({
+    where: { userId, status: "generating", currentVersion: { gt: 0 } },
+    data: { status: "preview" },
   });
-  if (inQueue >= (APP_LIMITS.maxQueueDepthPerUser ?? 3)) {
+  await prisma.design.updateMany({
+    where: { userId, status: "generating", updatedAt: { lt: staleCutoff } },
+    data: { status: "archived" },
+  });
+
+  // Queue depth should only consider active, recent in-flight generations.
+  const effectiveMaxQueueDepth = isGeminiPrimaryLlm() ? 10 : (APP_LIMITS.maxQueueDepthPerUser ?? 3);
+  const inQueue = await prisma.design.count({
+    where: { userId, status: "generating", updatedAt: { gte: staleCutoff } },
+  });
+  if (!IS_DEV && inQueue >= effectiveMaxQueueDepth) {
     return new Response(
       encodeSse({
         event: "error",
         data: {
           code: "QUEUE_FULL",
-          message: "You have too many designs generating",
+          message: "You have too many designs generating. Please wait ~30s and retry.",
           retryable: true,
         },
       }),

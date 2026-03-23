@@ -1,9 +1,12 @@
 export function sanitizeHtmlForIframe(html: string) {
   let out = html;
-  // Strip scripts, but preserve our own inline DesignForge postMessage helpers.
-  // These are injected during server-side post-processing and include the `__designforge` marker.
+  // Strip scripts, but preserve trusted runtime scripts needed for preview rendering:
+  // - DesignForge postMessage helper (`__designforge`)
+  // - Tailwind CDN script injected by post-processing for utility-class outputs.
   out = out.replace(/<script[\s\S]*?<\/script>/gi, (m) => {
+    const lower = m.toLowerCase();
     if (m.includes("__designforge")) return m;
+    if (lower.includes("https://cdn.tailwindcss.com")) return m;
     return "";
   });
   // Remove javascript: links.

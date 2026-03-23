@@ -10,6 +10,8 @@ type ToastItem = {
   title: string;
   description?: string;
   type?: "success" | "error" | "info";
+  actionLabel?: string;
+  onAction?: () => void;
 };
 
 interface UIState {

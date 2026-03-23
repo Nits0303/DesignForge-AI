@@ -12,6 +12,7 @@ type DesignSummary = {
   previewUrl: string | null;
   brandPrimaryColor?: string;
   promptSnippet?: string;
+  createdAt?: string;
 };
 
 function DesignCardSkeleton() {
@@ -40,6 +41,9 @@ export function DesignCard({ design, loading }: { design?: DesignSummary; loadin
         status={design.status}
       />
       <div className="mt-2 truncate px-1 text-xs font-semibold text-[hsl(var(--foreground))]">{design.title}</div>
+      <div className="mt-1 px-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+        {design.createdAt ? new Date(design.createdAt).toLocaleDateString() : ""}
+      </div>
     </Link>
   );
 }
