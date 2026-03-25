@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useUIStore } from "@/store/useUIStore";
 import { getFirstVisibleElementByIds } from "@/lib/dom/visibleElement";
+import { SOCIAL_DIMENSIONS } from "@/constants/platforms";
 
 type Shortcut = {
   keys: string;
@@ -17,6 +18,7 @@ export const WORKSPACE_SHORTCUTS: Shortcut[] = [
   { keys: "Cmd/Ctrl+Shift+Z", description: "Next version" },
   { keys: "Cmd/Ctrl+K", description: "Focus prompt & select all" },
   { keys: "Cmd/Ctrl+R", description: "Regenerate design (with confirmation)" },
+  { keys: "Shift+1/2/3", description: "Square / Portrait / Landscape canvas" },
   { keys: "←/→", description: "Previous/next slide" },
   { keys: "1/2/3", description: "Go to slide 1/2/3" },
   { keys: "F", description: "Toggle Fit / Actual" },
@@ -34,24 +36,16 @@ function isTextInput(target: EventTarget | null): boolean {
 }
 
 export function useWorkspaceKeyboardShortcuts() {
-  const {
-    setPreviewMode,
-    previewMode,
-    breakpoint,
-    setBreakpoint,
-    activeSlide,
-    setActiveSlide,
-    versionHistory,
-    activeVersionNumber,
-    setActiveVersionNumber,
-    setPreviewHtml,
-    triggerVersionFlash,
-  } = useWorkspaceStore((s) => s);
-
-  const { setActiveModal, showShortcuts, setShowShortcuts } = useUIStore((s) => s);
+  // Subscribe once; read latest state inside handlers to avoid dependency-array shape changes
+  // (and to keep keyboard shortcuts stable through streaming updates / Fast Refresh).
+  useWorkspaceStore(() => null);
+  useUIStore(() => null);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      const ws = useWorkspaceStore.getState();
+      const ui = useUIStore.getState();
+
       const isCmd = e.metaKey || e.ctrlKey;
       const key = e.key;
       const inText = isTextInput(e.target);
@@ -81,27 +75,27 @@ export function useWorkspaceKeyboardShortcuts() {
       // ── Cmd+Z / Cmd+Shift+Z: version navigation ───────────────────────────
       if (isCmd && key === "z" && !e.shiftKey) {
         e.preventDefault();
-        if (activeVersionNumber == null || versionHistory.length === 0) return;
-        const sorted = [...versionHistory].sort((a, b) => a.versionNumber - b.versionNumber);
-        const idx = sorted.findIndex((v) => v.versionNumber === activeVersionNumber);
+        if (ws.activeVersionNumber == null || ws.versionHistory.length === 0) return;
+        const sorted = [...ws.versionHistory].sort((a, b) => a.versionNumber - b.versionNumber);
+        const idx = sorted.findIndex((v) => v.versionNumber === ws.activeVersionNumber);
         const prev = sorted[idx - 1];
         if (prev) {
-          setActiveVersionNumber(prev.versionNumber);
-          setPreviewHtml(prev.htmlContent);
-          triggerVersionFlash();
+          ws.setActiveVersionNumber(prev.versionNumber);
+          ws.setPreviewHtml(prev.htmlContent);
+          ws.triggerVersionFlash();
         }
         return;
       }
       if (isCmd && key === "z" && e.shiftKey) {
         e.preventDefault();
-        if (activeVersionNumber == null || versionHistory.length === 0) return;
-        const sorted = [...versionHistory].sort((a, b) => a.versionNumber - b.versionNumber);
-        const idx = sorted.findIndex((v) => v.versionNumber === activeVersionNumber);
+        if (ws.activeVersionNumber == null || ws.versionHistory.length === 0) return;
+        const sorted = [...ws.versionHistory].sort((a, b) => a.versionNumber - b.versionNumber);
+        const idx = sorted.findIndex((v) => v.versionNumber === ws.activeVersionNumber);
         const next = sorted[idx + 1];
         if (next) {
-          setActiveVersionNumber(next.versionNumber);
-          setPreviewHtml(next.htmlContent);
-          triggerVersionFlash();
+          ws.setActiveVersionNumber(next.versionNumber);
+          ws.setPreviewHtml(next.htmlContent);
+          ws.triggerVersionFlash();
         }
         return;
       }
@@ -122,70 +116,68 @@ export function useWorkspaceKeyboardShortcuts() {
       // Block further non-cmd shortcuts when in a text input
       if (inText) return;
 
+      // ── Shift+1/2/3: dimension switching ──────────────────────────────────
+      if (e.shiftKey && ["1", "2", "3"].includes(key)) {
+        const locked =
+          ws.generationState !== "idle" ||
+          Boolean(ws.activeDesignId && (ws.previewHtml ?? "").trim().length > 0);
+        if (locked) return;
+        e.preventDefault();
+        const idx = Number(key) - 1;
+        const d = SOCIAL_DIMENSIONS[idx];
+        if (d) ws.setSelectedDimension(d as any);
+        return;
+      }
+
       // ── Esc: close modals / popovers ──────────────────────────────────────
       if (key === "Escape") {
         e.preventDefault();
-        setActiveModal("none");
-        setShowShortcuts(false);
+        ui.setActiveModal("none");
+        ui.setShowShortcuts(false);
         return;
       }
 
       // ── ?: toggle shortcuts modal ─────────────────────────────────────────
       if (key === "?") {
         e.preventDefault();
-        setShowShortcuts(!showShortcuts);
+        ui.setShowShortcuts(!ui.showShortcuts);
         return;
       }
 
       // ── F: Fit / Actual toggle ────────────────────────────────────────────
       if (!isCmd && key.toLowerCase() === "f") {
         e.preventDefault();
-        setPreviewMode(previewMode === "fit" ? "actual" : "fit");
+        ws.setPreviewMode(ws.previewMode === "fit" ? "actual" : "fit");
         return;
       }
 
       // ── Breakpoints ───────────────────────────────────────────────────────
       if (!isCmd) {
         const k = key.toLowerCase();
-        if (k === "d") { e.preventDefault(); setBreakpoint("desktop"); return; }
-        if (k === "t") { e.preventDefault(); setBreakpoint("tablet"); return; }
-        if (k === "m") { e.preventDefault(); setBreakpoint("mobile"); return; }
+        if (k === "d") { e.preventDefault(); ws.setBreakpoint("desktop"); return; }
+        if (k === "t") { e.preventDefault(); ws.setBreakpoint("tablet"); return; }
+        if (k === "m") { e.preventDefault(); ws.setBreakpoint("mobile"); return; }
       }
 
       // ── Slide navigation ──────────────────────────────────────────────────
       if (!isCmd && key === "ArrowLeft") {
         e.preventDefault();
-        setActiveSlide(Math.max(0, activeSlide - 1));
+        ws.setActiveSlide(Math.max(0, ws.activeSlide - 1));
         return;
       }
       if (!isCmd && key === "ArrowRight") {
         e.preventDefault();
-        setActiveSlide(activeSlide + 1);
+        ws.setActiveSlide(ws.activeSlide + 1);
         return;
       }
       if (!isCmd && ["1", "2", "3"].includes(key)) {
         e.preventDefault();
-        setActiveSlide(Number(key) - 1);
+        ws.setActiveSlide(Number(key) - 1);
         return;
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [
-    activeSlide,
-    activeVersionNumber,
-    breakpoint,
-    previewMode,
-    setActiveModal,
-    setActiveSlide,
-    setActiveVersionNumber,
-    setBreakpoint,
-    setPreviewHtml,
-    setPreviewMode,
-    setShowShortcuts,
-    showShortcuts,
-    triggerVersionFlash,
-    versionHistory,
-  ]);
+  }, []);
 }

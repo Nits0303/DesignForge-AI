@@ -1,15 +1,51 @@
 import type { ParsedIntent } from "@/types/ai";
 import type { Platform } from "@/types/design";
-import { PLATFORM_SPECS } from "@/constants/platforms";
+import {
+  DEFAULT_SOCIAL_DIMENSION,
+  SOCIAL_DIMENSIONS,
+  type SocialDimensionId,
+  type SocialDimensionPreset,
+  PLATFORM_SPECS,
+} from "@/constants/platforms";
 import { AI_MODELS } from "@/constants/models";
 import { callAnthropicWithRetry } from "@/lib/ai/anthropicClient";
 import { PROMPTS } from "@/lib/ai/prompts";
+import { startTraceRun, type TraceContext } from "@/lib/server/langsmith";
+
+function safeParseJSON(raw: string) {
+  const cleaned = String(raw ?? "")
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned);
+}
 
 type SmartRouterParams = {
   userId: string;
   prompt: string;
   partialIntent: Partial<ParsedIntent>;
+  trace?: TraceContext;
+  parentRunId?: string;
 };
+
+function isSocialPlatform(p: string): p is Platform {
+  return ["instagram", "linkedin", "facebook", "twitter"].includes(String(p).toLowerCase());
+}
+
+function inferSocialDimensionIdFromText(text: string): SocialDimensionId | null {
+  const t = String(text ?? "").toLowerCase();
+  if (/\b(square|1:1)\b/.test(t)) return "square";
+  if (/\b(portrait|vertical|4:5)\b/.test(t)) return "portrait";
+  if (/\b(landscape|horizontal|wide|16:9)\b/.test(t)) return "landscape";
+  return null;
+}
+
+function getSocialPresetById(id: SocialDimensionId | null | undefined): SocialDimensionPreset | null {
+  if (!id) return null;
+  return (SOCIAL_DIMENSIONS.find((d) => d.id === id) as SocialDimensionPreset | undefined) ?? null;
+}
 
 function clampDimensions(
   platform: Platform,
@@ -37,6 +73,8 @@ export async function smartRouteIntent({
   userId,
   prompt,
   partialIntent,
+  trace,
+  parentRunId,
 }: SmartRouterParams): Promise<ParsedIntent> {
   const initialPlatform = (partialIntent.platform ?? "instagram") as Platform;
   const initialFormat =
@@ -44,7 +82,15 @@ export async function smartRouteIntent({
       ? String(partialIntent.format).toLowerCase().replace(/\s+/g, "_")
       : PLATFORM_SPECS[initialPlatform].supportedFormats[0];
 
+  // If the workspace provided an explicit social dimension preset, apply it early.
+  const explicitSelected = (partialIntent.selectedDimension ?? null) as SocialDimensionPreset | null;
+  const explicitSelectedDims =
+    explicitSelected && isSocialPlatform(initialPlatform) && initialFormat === "post"
+      ? { width: explicitSelected.width, height: explicitSelected.height }
+      : null;
+
   const defaultDims =
+    explicitSelectedDims ??
     partialIntent.dimensions ??
     PLATFORM_SPECS[initialPlatform].defaultDimensions[initialFormat] ??
     Object.values(PLATFORM_SPECS[initialPlatform].defaultDimensions)[0];
@@ -61,6 +107,18 @@ export async function smartRouteIntent({
     },
   ];
 
+  const run = await startTraceRun({
+    name: "smart_router_intent",
+    runType: "llm",
+    inputs: {
+      prompt,
+      partialIntent,
+    },
+    tags: ["router", "intent"],
+    trace,
+    parentRunId,
+  });
+
   const res = await callAnthropicWithRetry(
     {
       model: AI_MODELS.ROUTER_HAIKU,
@@ -68,13 +126,27 @@ export async function smartRouteIntent({
       max_tokens: 512,
       messages,
     },
-    { userId }
+    {
+      userId,
+      trace: {
+        ...(trace ?? {}),
+        stage: "smart_router",
+      },
+      parentRunId: run?.id ?? parentRunId,
+    }
   );
+  await run?.finish({
+    outputs: {
+      model: res.model,
+      inputTokens: res.usage?.input_tokens ?? 0,
+      outputTokens: res.usage?.output_tokens ?? 0,
+    },
+  });
 
   const text = res.content[0]?.type === "text" ? res.content[0].text : "";
   let parsed: ParsedIntent | null = null;
   try {
-    parsed = JSON.parse(text) as ParsedIntent;
+    parsed = safeParseJSON(text) as ParsedIntent;
   } catch {
     parsed = null;
   }
@@ -95,7 +167,26 @@ export async function smartRouteIntent({
     ? resolvedFormatCandidate
     : resolvedSpec.supportedFormats[0];
 
-  const dimsFromParsed = parsedAny?.dimensions ?? partialIntent.dimensions ?? defaultDims;
+  // Determine selectedDimension for social "post".
+  const selectedFromParsed = (parsedAny?.selectedDimension ?? null) as SocialDimensionPreset | null;
+  const selectedFromText =
+    isSocialPlatform(resolvedPlatform) && resolvedFormat === "post"
+      ? getSocialPresetById(inferSocialDimensionIdFromText(prompt)) ?? null
+      : null;
+
+  const resolvedSelectedDimension: SocialDimensionPreset | null =
+    (explicitSelected && isSocialPlatform(resolvedPlatform) && resolvedFormat === "post" ? explicitSelected : null) ??
+    (selectedFromParsed && isSocialPlatform(resolvedPlatform) && resolvedFormat === "post" ? selectedFromParsed : null) ??
+    selectedFromText ??
+    (isSocialPlatform(resolvedPlatform) && resolvedFormat === "post" ? DEFAULT_SOCIAL_DIMENSION : null);
+
+  const dimsFromParsed =
+    (resolvedSelectedDimension && isSocialPlatform(resolvedPlatform) && resolvedFormat === "post"
+      ? { width: resolvedSelectedDimension.width, height: resolvedSelectedDimension.height }
+      : null) ??
+    parsedAny?.dimensions ??
+    partialIntent.dimensions ??
+    defaultDims;
 
   const screenPlanFromParsed = Array.isArray(parsedAny?.screenPlan)
     ? (parsedAny.screenPlan as any[])
@@ -118,6 +209,7 @@ export async function smartRouteIntent({
     platform: resolvedPlatform,
     format: resolvedFormat,
     dimensions: clampDimensions(resolvedPlatform, resolvedFormat, dimsFromParsed as any),
+    selectedDimension: resolvedSelectedDimension,
     slideCount:
       parsed?.slideCount && parsed.slideCount > 0
         ? Math.min(parsed.slideCount, 10)

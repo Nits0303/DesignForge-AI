@@ -11,6 +11,7 @@ const itemSchema = z.object({
   format: z.string().min(1),
   notes: z.string().max(500).optional(),
   referenceImageUrl: z.union([z.string().url(), z.literal("")]).optional(),
+  dimensionId: z.enum(["square", "portrait", "landscape"]).optional(),
 });
 
 export const batchCreateInputSchema = z.object({
@@ -146,6 +147,7 @@ export async function createBatchJobForUser(args: {
       format: it.format,
       notes: it.notes,
       referenceImageUrl: it.referenceImageUrl || null,
+      dimensionId: (it as any).dimensionId ?? null,
       status: isPotentialDuplicate(idx) ? "failed" : "pending",
       errorMessage: isPotentialDuplicate(idx) ? "Duplicate detected (skipped generation)." : null,
       revisionPrompt: null,

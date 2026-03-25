@@ -31,6 +31,15 @@ function estimateCostUsd(inputTokens: number, outputTokens: number): number {
   return Number((costInput + costOutput).toFixed(6));
 }
 
+function shouldLogGeminiResponse(): boolean {
+  return process.env.AI_DEBUG === "true" || process.env.GEMINI_LOG_RESPONSE === "true";
+}
+
+function toLogPreview(text: string, max = 4000): string {
+  if (!text) return "";
+  return text.length > max ? `${text.slice(0, max)}\n...[truncated]...` : text;
+}
+
 type AnthropicContentBlock =
   | { type: "text"; text: string }
   | {
@@ -209,6 +218,17 @@ export async function callGeminiAsAnthropicMessage(
   const outputTokens = usage?.candidatesTokenCount ?? 0;
   const costUsd = estimateCostUsd(inputTokens, outputTokens);
 
+  if (shouldLogGeminiResponse()) {
+    console.log("[Gemini response]", {
+      mode: "non_stream",
+      model: modelId,
+      inputTokens,
+      outputTokens,
+      costUsd,
+    });
+    console.log(toLogPreview(text));
+  }
+
   await logAIUsage({
     model: modelId,
     userId: opts.userId,
@@ -246,7 +266,11 @@ export async function callGeminiWithRetry(
   },
   opts: { userId: string; designId?: string | null }
 ): Promise<Messages.Message> {
-  const delays = [1000, 3000, 9000, 20000];
+  const maxAttemptsRaw = Number(process.env.GEMINI_MAX_ATTEMPTS ?? "2");
+  const maxAttempts = Number.isFinite(maxAttemptsRaw)
+    ? Math.max(1, Math.min(4, Math.floor(maxAttemptsRaw)))
+    : 2;
+  const delays = [1000, 3000, 9000, 20000].slice(0, maxAttempts);
 
   for (let attempt = 0; attempt < delays.length; attempt++) {
     try {
@@ -305,6 +329,7 @@ export async function streamGeminiGeneration(args: {
   );
 
   try {
+    let streamed = "";
     const result = await genModel.generateContentStream({ contents });
     for await (const chunk of result.stream) {
       let t = "";
@@ -313,7 +338,10 @@ export async function streamGeminiGeneration(args: {
       } catch {
         // Some chunks have no text (e.g. only metadata).
       }
-      if (t) args.onText(t);
+      if (t) {
+        streamed += t;
+        args.onText(t);
+      }
     }
 
     const response = await result.response;
@@ -321,6 +349,17 @@ export async function streamGeminiGeneration(args: {
     const inputTokens = usageMeta?.promptTokenCount ?? 0;
     const outputTokens = usageMeta?.candidatesTokenCount ?? 0;
     const costUsd = estimateCostUsd(inputTokens, outputTokens);
+
+    if (shouldLogGeminiResponse()) {
+      console.log("[Gemini response]", {
+        mode: "stream",
+        model: modelId,
+        inputTokens,
+        outputTokens,
+        costUsd,
+      });
+      console.log(toLogPreview(streamed));
+    }
 
     await logAIUsage({
       model: modelId,

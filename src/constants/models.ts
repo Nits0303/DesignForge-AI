@@ -1,5 +1,5 @@
-/** Logical names; when using Gemini (`GEMINI_API_KEY`), all map to the same Gemini 2.5 Flash model id. */
-export const GEMINI_FLASH_MODEL_ID = "gemini-2.5-flash";
+/** Gemini-only model ids for current test phase. */
+export const GEMINI_FLASH_MODEL_ID = process.env.GEMINI_MODEL?.trim() || "gemini-2.5-flash";
 
 export const AI_MODELS = {
   ROUTER_HAIKU: GEMINI_FLASH_MODEL_ID,

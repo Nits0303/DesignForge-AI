@@ -4,6 +4,8 @@ import type { Design, DesignVersion } from "@/types/design";
 import type { ReferenceAnalysis } from "@/types/ai";
 import type { MobileDeviceId } from "@/constants/mobileDevices";
 import { DEFAULT_MOBILE_DEVICE_ID } from "@/constants/mobileDevices";
+import type { SocialDimensionPreset } from "@/constants/platforms";
+import { DEFAULT_SOCIAL_DIMENSION, SOCIAL_DIMENSIONS } from "@/constants/platforms";
 
 export type RevisionMessageRole = "user" | "assistant" | "system" | "error";
 
@@ -86,6 +88,11 @@ interface WorkspaceState {
     sectionCount?: number | null;
   } | null;
 
+  /** Social media canvas size preset (Square/Portrait/Landscape). */
+  selectedDimension: SocialDimensionPreset;
+  setSelectedDimension: (d: SocialDimensionPreset) => void;
+  resetDimensionToDefault: () => void;
+
   /** Mobile preview device + orientation (Sprint 14). */
   activeDeviceId: MobileDeviceId;
   deviceOrientation: "portrait" | "landscape";
@@ -100,6 +107,8 @@ interface WorkspaceState {
   setActiveBrandProfileId: (id: string | null) => void;
   setGenerating: (value: boolean) => void;
   resetGeneration: () => void;
+  /** Clears all workspace session state (design selection + preview + revisions + references). */
+  resetWorkspaceSession: () => void;
   setGenerationState: (state: GenerationState) => void;
   appendStreamChunk: (htmlChunk: string) => void;
   setPreviewHtml: (html: string) => void;
@@ -142,6 +151,20 @@ interface WorkspaceState {
   bumpWorkspaceDesignSync: () => void;
 }
 
+const DIMENSION_STORAGE_KEY = "designforge:workspace:dimension";
+
+function getInitialSelectedDimension(): SocialDimensionPreset {
+  if (typeof window === "undefined") return DEFAULT_SOCIAL_DIMENSION;
+  try {
+    const raw = window.localStorage.getItem(DIMENSION_STORAGE_KEY);
+    if (!raw) return DEFAULT_SOCIAL_DIMENSION;
+    const match = SOCIAL_DIMENSIONS.find((d) => d.id === raw);
+    return match ?? DEFAULT_SOCIAL_DIMENSION;
+  } catch {
+    return DEFAULT_SOCIAL_DIMENSION;
+  }
+}
+
 export const useWorkspaceStore = create<WorkspaceState>()(
   devtools((set, get) => ({
     currentDesign: null,
@@ -171,6 +194,7 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     scrollToSectionType: null,
     lastPrompt: "",
     lastGenerationMeta: null,
+    selectedDimension: getInitialSelectedDimension(),
     activeDeviceId: DEFAULT_MOBILE_DEVICE_ID,
     deviceOrientation: "portrait",
     revisionQueue: [],
@@ -191,6 +215,36 @@ export const useWorkspaceStore = create<WorkspaceState>()(
         statusMessage: "Preparing your design...",
         activeSlide: 0,
         isGenerating: false,
+      }),
+    resetWorkspaceSession: () =>
+      set({
+        currentDesign: null,
+        versionHistory: [],
+        activeVersionNumber: null,
+        activeDesignId: null,
+        previewHtml: "",
+        currentHtmlContent: "",
+        streamedHtml: "",
+        revisionMessages: [],
+        revisionChatMessages: [],
+        generationError: null,
+        statusMessage: null,
+        generationState: "idle",
+        isGenerating: false,
+        activeSlide: 0,
+        referenceImageUrl: null,
+        activeReferences: [],
+        revisionInProgress: false,
+        hoveredSectionType: null,
+        scrollToSectionType: null,
+        lastPrompt: "",
+        lastGenerationMeta: null,
+        exportStatus: "idle",
+        versionFlashNonce: 0,
+        revisionQueue: [],
+        activeRevisionQueueId: null,
+        deferredProjectId: null,
+        deferredProjectName: null,
       }),
     setGenerationState: (state) =>
       set({
@@ -281,6 +335,26 @@ export const useWorkspaceStore = create<WorkspaceState>()(
     setScrollToSectionType: (t) => set({ scrollToSectionType: t }),
     setLastPrompt: (prompt) => set({ lastPrompt: prompt }),
     setLastGenerationMeta: (meta) => set({ lastGenerationMeta: meta }),
+    setSelectedDimension: (d) => {
+      set({ selectedDimension: d });
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(DIMENSION_STORAGE_KEY, d.id);
+        } catch {
+          // ignore
+        }
+      }
+    },
+    resetDimensionToDefault: () => {
+      set({ selectedDimension: DEFAULT_SOCIAL_DIMENSION });
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.setItem(DIMENSION_STORAGE_KEY, DEFAULT_SOCIAL_DIMENSION.id);
+        } catch {
+          // ignore
+        }
+      }
+    },
     setActiveDeviceId: (id) => set({ activeDeviceId: id }),
     setDeviceOrientation: (o) => set({ deviceOrientation: o }),
 

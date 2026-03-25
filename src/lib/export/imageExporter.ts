@@ -9,6 +9,7 @@ import { parse } from "node-html-parser";
 import type { ParsedIntent } from "@/types/ai";
 import type { ExportFormat } from "@prisma/client";
 import type { BrandProfile } from "@prisma/client";
+import { SOCIAL_DIMENSIONS } from "@/constants/platforms";
 
 import archiver from "archiver";
 
@@ -24,6 +25,11 @@ function normaliseDims(dimensions: any): { width: number; height: number } {
     return { width: Number(d0.width) || 1080, height: Number(d0.height) || 1080 };
   }
   return { width: 1080, height: 1080 };
+}
+
+function isSocialPlatform(platform: string) {
+  const p = String(platform ?? "").toLowerCase();
+  return p === "instagram" || p === "linkedin" || p === "facebook" || p === "twitter";
 }
 
 function buildIntent(design: {
@@ -128,7 +134,11 @@ export async function exportImageDesign({
   const processedDoc = parse(processedForSections);
   const sectionNodes = processedDoc.querySelectorAll('section[data-section-type]');
 
-  const dims = normaliseDims(design.dimensions);
+  const preset =
+    isSocialPlatform(design.platform) && typeof (design as any).selectedDimensionId === "string"
+      ? SOCIAL_DIMENSIONS.find((d) => d.id === (design as any).selectedDimensionId) ?? null
+      : null;
+  const dims = preset ? { width: preset.width, height: preset.height } : normaliseDims(design.dimensions);
   const width = dims.width;
   const height = dims.height;
 

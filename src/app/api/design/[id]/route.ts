@@ -27,6 +27,7 @@ export async function GET(_req: Request, context: { params: Promise<{ id: string
       where: { id, userId },
       include: {
         versions: {
+          where: { deletedAt: null },
           orderBy: { versionNumber: "asc" },
         },
         brand: { select: { name: true } },

@@ -1,10 +1,57 @@
 import type { Platform } from "@/types/design";
 import { DEFAULT_MOBILE_DEVICE_ID, MOBILE_DEVICE_PRESETS } from "@/constants/mobileDevices";
 
+export type SocialDimensionId = "square" | "portrait" | "landscape";
+export type SocialDimensionPreset = {
+  id: SocialDimensionId;
+  label: string;
+  width: number;
+  height: number;
+  ratio: "1:1" | "4:5" | "16:9";
+  description: string;
+  platforms: Platform[];
+  isDefault?: boolean;
+};
+
+export const SOCIAL_DIMENSIONS: SocialDimensionPreset[] = [
+  {
+    id: "square",
+    label: "Square",
+    width: 1080,
+    height: 1080,
+    ratio: "1:1",
+    description: "Universal format — works on all social platforms",
+    platforms: ["instagram", "linkedin", "facebook", "twitter"],
+  },
+  {
+    id: "portrait",
+    label: "Portrait",
+    width: 1080,
+    height: 1350,
+    ratio: "4:5",
+    description: "Max vertical space — best for feed engagement on Instagram & LinkedIn",
+    platforms: ["instagram", "linkedin"],
+  },
+  {
+    id: "landscape",
+    label: "Landscape",
+    width: 1200,
+    height: 675,
+    ratio: "16:9",
+    description: "Wide format — covers LinkedIn, Facebook, and Twitter",
+    platforms: ["linkedin", "facebook", "twitter"],
+    isDefault: true,
+  },
+] as const;
+
+export const DEFAULT_SOCIAL_DIMENSION = SOCIAL_DIMENSIONS.find((d) => d.isDefault)!;
+
 type PlatformSpec = {
   displayName: string;
   supportedFormats: string[];
   defaultDimensions: Record<string, { width: number; height: number | "auto" }>;
+  /** For social platforms, shared selectable presets for `post` generation. */
+  dimensions?: SocialDimensionPreset[];
 };
 
 export const PLATFORM_SPECS: Record<Platform, PlatformSpec> = {
@@ -12,33 +59,38 @@ export const PLATFORM_SPECS: Record<Platform, PlatformSpec> = {
     displayName: "Instagram",
     supportedFormats: ["post", "story"],
     defaultDimensions: {
-      post: { width: 1080, height: 1080 },
+      // Social "post" uses shared presets; default remains Landscape unless user overrides.
+      post: { width: DEFAULT_SOCIAL_DIMENSION.width, height: DEFAULT_SOCIAL_DIMENSION.height },
       story: { width: 1080, height: 1920 },
     },
+    dimensions: SOCIAL_DIMENSIONS as unknown as SocialDimensionPreset[],
   },
   linkedin: {
     displayName: "LinkedIn",
     supportedFormats: ["post", "banner"],
     defaultDimensions: {
-      post: { width: 1200, height: 627 },
+      post: { width: DEFAULT_SOCIAL_DIMENSION.width, height: DEFAULT_SOCIAL_DIMENSION.height },
       banner: { width: 1584, height: 396 },
     },
+    dimensions: SOCIAL_DIMENSIONS as unknown as SocialDimensionPreset[],
   },
   facebook: {
     displayName: "Facebook",
     supportedFormats: ["post", "story"],
     defaultDimensions: {
-      post: { width: 1200, height: 630 },
+      post: { width: DEFAULT_SOCIAL_DIMENSION.width, height: DEFAULT_SOCIAL_DIMENSION.height },
       story: { width: 1080, height: 1920 },
     },
+    dimensions: SOCIAL_DIMENSIONS as unknown as SocialDimensionPreset[],
   },
   twitter: {
     displayName: "Twitter/X",
     supportedFormats: ["post", "banner"],
     defaultDimensions: {
-      post: { width: 1600, height: 900 },
+      post: { width: DEFAULT_SOCIAL_DIMENSION.width, height: DEFAULT_SOCIAL_DIMENSION.height },
       banner: { width: 1500, height: 500 },
     },
+    dimensions: SOCIAL_DIMENSIONS as unknown as SocialDimensionPreset[],
   },
   website: {
     displayName: "Website",

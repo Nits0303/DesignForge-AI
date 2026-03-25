@@ -38,6 +38,7 @@ const SIDEBAR_KEY = "df:sidebar_open";
 export function DashboardShell({ children, user, hasBrands }: Props) {
   const pathname = usePathname();
   const router = useRouter();
+  const resetWorkspaceSession = useWorkspaceStore((s) => s.resetWorkspaceSession);
   const { isSidebarOpen, setSidebarOpen } = useUIStore();
   const [unreadNotificationsCount, setUnreadNotificationsCount] = useState<number>(0);
   /** Header name/avatar synced from DB — session.user.image is often stale after profile changes. */
@@ -194,7 +195,10 @@ export function DashboardShell({ children, user, hasBrands }: Props) {
             </div>
 
             <Button
-              onClick={() => router.push("/workspace")}
+              onClick={() => {
+                resetWorkspaceSession();
+                router.push("/workspace");
+              }}
               className="hidden sm:inline-flex"
             >
               <Sparkles className="mr-2 h-4 w-4" />

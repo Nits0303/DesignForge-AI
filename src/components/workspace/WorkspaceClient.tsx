@@ -10,6 +10,7 @@ import { WorkspaceTour } from "@/components/workspace/WorkspaceTour";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useWorkspaceKeyboardShortcuts } from "@/hooks/useWorkspaceKeyboardShortcuts";
 import { useDeferredProjectAssignment } from "@/hooks/useDeferredProjectAssignment";
+import { DEFAULT_SOCIAL_DIMENSION, SOCIAL_DIMENSIONS } from "@/constants/platforms";
 
 export function WorkspaceClient() {
   const router = useRouter();
@@ -29,6 +30,8 @@ export function WorkspaceClient() {
   const setActiveSlide = useWorkspaceStore((s) => s.setActiveSlide);
   const setLastPrompt = useWorkspaceStore((s) => s.setLastPrompt);
   const setLastGenerationMeta = useWorkspaceStore((s) => s.setLastGenerationMeta);
+  const setSelectedDimension = useWorkspaceStore((s) => s.setSelectedDimension);
+  const resetWorkspaceSession = useWorkspaceStore((s) => s.resetWorkspaceSession);
   const activeVersionNumber = useWorkspaceStore((s) => s.activeVersionNumber);
   const activeSlide = useWorkspaceStore((s) => s.activeSlide);
   const versionHistory = useWorkspaceStore((s) => s.versionHistory);
@@ -39,7 +42,13 @@ export function WorkspaceClient() {
 
   // ── Load design from URL designId ──────────────────────────────────────
   useEffect(() => {
-    if (!designId) return;
+    if (!designId) {
+      // Navigated to /workspace without a designId (New Design).
+      // Clear any previous design preview + related memory so the canvas is empty.
+      resetWorkspaceSession();
+      setPrompt(initialPrompt);
+      return;
+    }
     let mounted = true;
     (async () => {
       try {
@@ -52,6 +61,14 @@ export function WorkspaceClient() {
           setVersionHistory(versions);
           setActiveDesignId(design.id ?? designId);
           setLastPrompt(design.originalPrompt ?? "");
+          // Restore dimension selector state from design, with silent inference fallback.
+          const storedId = String(design.selectedDimensionId ?? "").trim();
+          const fromStored = SOCIAL_DIMENSIONS.find((d) => d.id === storedId) ?? null;
+          const inferred =
+            !fromStored && design.dimensions && typeof design.dimensions.width === "number" && typeof design.dimensions.height === "number"
+              ? SOCIAL_DIMENSIONS.find((d) => d.width === design.dimensions.width && d.height === design.dimensions.height) ?? null
+              : null;
+          setSelectedDimension(fromStored ?? inferred ?? DEFAULT_SOCIAL_DIMENSION);
           setLastGenerationMeta({
             platform: design.platform,
             format: design.format,
@@ -88,6 +105,8 @@ export function WorkspaceClient() {
     designId,
     versionIdParam,
     slideParam,
+    initialPrompt,
+    resetWorkspaceSession,
     setActiveDesignId,
     setActiveVersionNumber,
     setActiveSlide,
@@ -147,13 +166,13 @@ export function WorkspaceClient() {
 
       {/* Desktop layout */}
       <div className={layoutCls}>
-        <div className="min-w-0 overflow-hidden">
+        <div className="min-h-0 min-w-0 overflow-hidden">
           <WorkspacePromptPanel layout="desktop" prompt={prompt} setPrompt={setPrompt} />
         </div>
-        <div className="min-w-0 overflow-hidden">
+        <div className="min-h-0 min-w-0 overflow-hidden">
           <WorkspacePreviewPanel layout="desktop" />
         </div>
-        <div className="min-w-0 overflow-hidden">
+        <div className="min-h-0 min-w-0 overflow-hidden">
           <WorkspaceRightPanel layout="desktop" />
         </div>
       </div>

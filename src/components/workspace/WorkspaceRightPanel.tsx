@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Clock, ChevronDown } from "lucide-react";
+import { AlertTriangle, Clock, ChevronDown, Pencil, Trash2 } from "lucide-react";
 import * as Tooltip from "@radix-ui/react-tooltip";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useUIStore } from "@/store/useUIStore";
@@ -51,6 +52,24 @@ function parseSseChunk(chunk: string) {
     }
   }
   return events;
+}
+
+function sanitizeIncomingHtml(raw: string): string {
+  let out = String(raw ?? "");
+  // Strip markdown fences and odd leaked prefixes from streamed model text.
+  out = out.replace(/^["']?```(?:html|HTML)?\s*/i, "");
+  out = out.replace(/\s*```["']?$/i, "");
+  out = out.replace(/^(?:['"`]{2,}\s*html|html)\s*\n+/i, "");
+  const docStart = out.search(/<(?:!doctype|html|div|main|section|article|header|footer|nav|img)\b/i);
+  if (docStart > 0) out = out.slice(docStart);
+  return out;
+}
+
+function looksRenderableHtml(raw: string): boolean {
+  const t = String(raw ?? "").trim();
+  if (!t) return false;
+  if (t.startsWith("[")) return true;
+  return /<[a-z][^>]*>/i.test(t);
 }
 
 function normalizeSectionToken(s: string) {
@@ -117,6 +136,70 @@ export function WorkspaceRightPanel({
   const { enqueueToast } = useUIStore((s) => s);
 
   const [designMeta, setDesignMeta] = useState<any>(null);
+  const [renamingVersion, setRenamingVersion] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState<string>("");
+
+  const saveVersionLabel = useCallback(
+    async (versionNumber: number, label: string) => {
+      if (!activeDesignId) return;
+      const trimmed = label.trim();
+      if (!trimmed) return;
+      const res = await fetch(`/api/design/${activeDesignId}/version/${versionNumber}/label`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: trimmed }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        enqueueToast({ title: "Rename failed", description: json?.error?.message ?? "Unknown error", type: "error" });
+        return;
+      }
+      setVersionHistory(
+        useWorkspaceStore
+          .getState()
+          .versionHistory.map((v) => (v.versionNumber === versionNumber ? { ...v, label: trimmed } : v))
+      );
+      enqueueToast({ title: `Renamed v${versionNumber}`, type: "success" });
+    },
+    [activeDesignId, enqueueToast, setVersionHistory]
+  );
+
+  const deleteVersion = useCallback(
+    async (versionNumber: number) => {
+      if (!activeDesignId) return;
+      const res = await fetch(`/api/design/${activeDesignId}/version/${versionNumber}`, { method: "DELETE" });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.success) {
+        enqueueToast({ title: "Delete failed", description: json?.error?.message ?? "Unknown error", type: "error" });
+        return;
+      }
+
+      const prevVersions = useWorkspaceStore.getState().versionHistory;
+      setVersionHistory(prevVersions.filter((v) => v.versionNumber !== versionNumber));
+
+      enqueueToast({
+        title: `Version v${versionNumber} deleted`,
+        type: "info",
+        actionLabel: "Undo",
+        onAction: async () => {
+          try {
+            const r = await fetch(`/api/design/${activeDesignId}/version/${versionNumber}/restore`, { method: "POST" });
+            const j = await r.json();
+            if (!r.ok || !j?.success) throw new Error(j?.error?.message ?? "Undo failed");
+            // Re-fetch to restore proper ordering + htmlContent
+            const designRes = await fetch(`/api/design/${activeDesignId}`);
+            const designJson = await designRes.json();
+            if (designRes.ok && designJson?.success) {
+              setVersionHistory(designJson.data.versions ?? []);
+            }
+          } catch (e: any) {
+            enqueueToast({ title: "Undo failed", description: e?.message ?? "Unknown error", type: "error" });
+          }
+        },
+      });
+    },
+    [activeDesignId, enqueueToast, setVersionHistory]
+  );
   const [titleDraft, setTitleDraft] = useState("");
   const [tagsDraft, setTagsDraft] = useState("");
 
@@ -167,9 +250,11 @@ export function WorkspaceRightPanel({
   // ─── Throttled preview updater ───────────────────────────────────────────
   const schedulePreviewUpdate = useCallback(
     (html: string) => {
+      const cleaned = sanitizeIncomingHtml(html);
+      if (!looksRenderableHtml(cleaned)) return;
       if (throttlePreviewRef.current) return;
       throttlePreviewRef.current = setTimeout(() => {
-        setPreviewHtml(html);
+        setPreviewHtml(cleaned);
         throttlePreviewRef.current = null;
       }, 200);
     },
@@ -232,13 +317,17 @@ export function WorkspaceRightPanel({
           for (const evt of events) {
             if (evt.event === "chunk") {
               htmlBuffer += evt.data.html ?? "";
+              htmlBuffer = sanitizeIncomingHtml(htmlBuffer);
               schedulePreviewUpdate(htmlBuffer);
             } else if (evt.event === "complete") {
               if (throttlePreviewRef.current) {
                 clearTimeout(throttlePreviewRef.current);
                 throttlePreviewRef.current = null;
               }
-              setPreviewHtml(htmlBuffer);
+              const cleanedFinal = sanitizeIncomingHtml(htmlBuffer);
+              if (looksRenderableHtml(cleanedFinal)) {
+                setPreviewHtml(cleanedFinal);
+              }
               triggerVersionFlash();
               // Refresh version history
               if (item.designId) {
@@ -426,31 +515,118 @@ export function WorkspaceRightPanel({
                         }}
                         className="flex flex-1 items-center justify-between text-left"
                       >
-                        <span>v{v.versionNumber}</span>
+                        {renamingVersion === v.versionNumber ? (
+                          <input
+                            autoFocus
+                            value={renameDraft}
+                            onChange={(e) => setRenameDraft(e.target.value.slice(0, 60))}
+                            onBlur={() => {
+                              void saveVersionLabel(v.versionNumber, renameDraft);
+                              setRenamingVersion(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                setRenamingVersion(null);
+                              } else if (e.key === "Enter") {
+                                void saveVersionLabel(v.versionNumber, renameDraft);
+                                setRenamingVersion(null);
+                              }
+                            }}
+                            className="w-full max-w-[140px] rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface))] px-1 py-0.5 text-[11px] outline-none focus:ring-1 focus:ring-[hsl(var(--accent))]"
+                          />
+                        ) : (
+                          <span className="truncate">
+                            {v.label?.trim() ? v.label : `v${v.versionNumber}`}
+                          </span>
+                        )}
                         <span className="text-[hsl(var(--muted-foreground))]">
                           {v.versionNumber > 1 ? "Revision" : "Initial"}
                         </span>
                       </button>
-                      <button
-                        type="button"
-                        className="hidden rounded border border-[hsl(var(--border))] px-1 py-0.5 text-[10px] text-[hsl(var(--muted-foreground))] group-hover:inline-flex"
-                        onClick={async () => {
-                          if (!activeDesignId) return;
-                          const res = await fetch(`/api/design/${activeDesignId}/restore`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ versionNumber: v.versionNumber }),
-                          });
-                          const json = await res.json();
-                          if (res.ok && json.success) {
-                            setActiveVersionNumber(json.data.versionNumber);
-                            setPreviewHtml(v.htmlContent);
-                            triggerVersionFlash();
-                          }
-                        }}
-                      >
-                        Restore
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          className="hidden rounded border border-[hsl(var(--border))] px-1 py-0.5 text-[10px] text-[hsl(var(--muted-foreground))] group-hover:inline-flex"
+                          onClick={async () => {
+                            if (!activeDesignId) return;
+                            const res = await fetch(`/api/design/${activeDesignId}/restore`, {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ versionNumber: v.versionNumber }),
+                            });
+                            const json = await res.json();
+                            if (res.ok && json.success) {
+                              setActiveVersionNumber(json.data.versionNumber);
+                              setPreviewHtml(v.htmlContent);
+                              triggerVersionFlash();
+                            }
+                          }}
+                        >
+                          Restore
+                        </button>
+
+                        <DropdownMenu.Root>
+                          <DropdownMenu.Trigger asChild>
+                            <button
+                              type="button"
+                              className="flex h-6 w-6 items-center justify-center rounded opacity-0 transition-opacity hover:bg-[hsl(var(--surface-elevated))] group-hover:opacity-100 data-[state=open]:opacity-100"
+                              title="Version options"
+                            >
+                              <ChevronDown className="h-4 w-4 text-[hsl(var(--muted-foreground))]" />
+                            </button>
+                          </DropdownMenu.Trigger>
+                          <DropdownMenu.Portal>
+                            <DropdownMenu.Content
+                              align="end"
+                              sideOffset={6}
+                              className="z-50 min-w-[160px] rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-1 text-xs shadow"
+                            >
+                              <DropdownMenu.Item
+                                className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none hover:bg-[hsl(var(--surface))]"
+                                onSelect={() => {
+                                  setRenamingVersion(v.versionNumber);
+                                  setRenameDraft(v.label?.trim() ? v.label : `v${v.versionNumber}`);
+                                }}
+                              >
+                                <Pencil className="h-3.5 w-3.5" />
+                                Rename
+                              </DropdownMenu.Item>
+
+                              <DropdownMenu.Separator className="my-1 h-px bg-[hsl(var(--border))]" />
+
+                              {v.versionNumber === 1 || v.versionNumber === activeVersionNumber ? (
+                                <Tooltip.Root>
+                                  <Tooltip.Trigger asChild>
+                                    <div className="flex cursor-not-allowed items-center gap-2 rounded px-2 py-1.5 text-red-400/50">
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                      Delete
+                                    </div>
+                                  </Tooltip.Trigger>
+                                  <Tooltip.Portal>
+                                    <Tooltip.Content
+                                      className="z-50 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] px-2 py-1 text-[10px] text-[hsl(var(--foreground))] shadow"
+                                      sideOffset={6}
+                                    >
+                                      {v.versionNumber === 1
+                                        ? "The original version cannot be deleted."
+                                        : "Cannot delete the active version. Load a different version first."}
+                                      <Tooltip.Arrow className="fill-[hsl(var(--surface-elevated))]" />
+                                    </Tooltip.Content>
+                                  </Tooltip.Portal>
+                                </Tooltip.Root>
+                              ) : (
+                                <DropdownMenu.Item
+                                  className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-red-400 outline-none hover:bg-red-500/10"
+                                  onSelect={() => void deleteVersion(v.versionNumber)}
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                  Delete
+                                </DropdownMenu.Item>
+                              )}
+                            </DropdownMenu.Content>
+                          </DropdownMenu.Portal>
+                        </DropdownMenu.Root>
+                      </div>
                     </div>
                   ))
                 )}

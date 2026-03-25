@@ -47,7 +47,8 @@ export function parseShortcode(prompt: string): ShortcodeParseResult | null {
     const num = parseInt(parts[index]!, 10);
     if (!Number.isNaN(num) && num > 0) {
       count = num;
-      index += 2;
+      // Count consumes exactly one token (e.g. "/instagram post 3 ...").
+      index += 1;
     }
   }
 

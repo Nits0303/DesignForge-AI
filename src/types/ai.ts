@@ -1,5 +1,6 @@
 import type { DesignFormat, Platform } from "@/types/design";
 import type { MobileAppCategory } from "@/constants/mobileAppCategories";
+import type { SocialDimensionPreset } from "@/constants/platforms";
 
 /** One screen in a mobile flow (onboarding, auth, checkout, …). */
 export type MobileScreenDescriptor = {
@@ -16,6 +17,11 @@ export type ParsedIntent = {
   dimensions:
     | { width: number; height: number | "auto" }
     | { width: number; height: number | "auto" }[];
+  /**
+   * Social-media-only canvas selection (Square/Portrait/Landscape).
+   * Null for non-social platforms and for social formats that use fixed sizes (e.g. story/banner).
+   */
+  selectedDimension?: SocialDimensionPreset | null;
   slideCount?: number;
   screenCount?: number;
   /**

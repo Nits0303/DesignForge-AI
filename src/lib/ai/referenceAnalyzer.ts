@@ -85,6 +85,16 @@ function isRefusal(text: string) {
   );
 }
 
+function safeParseJSON(raw: string) {
+  const cleaned = String(raw ?? "")
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned);
+}
+
 function parseStoragePathFromPublicUrl(fileUrl: string) {
   const marker = "/api/files/";
   const idx = fileUrl.indexOf(marker);
@@ -92,7 +102,7 @@ function parseStoragePathFromPublicUrl(fileUrl: string) {
   return fileUrl.slice(idx + marker.length);
 }
 
-async function readImageFromStorageUrl(fileUrl: string): Promise<Buffer> {
+export async function readImageFromStorageUrl(fileUrl: string): Promise<Buffer> {
   const storagePath = parseStoragePathFromPublicUrl(fileUrl);
   if (!storagePath) throw new Error("Invalid storage URL");
   const baseDir = process.env.LOCAL_STORAGE_PATH ?? "./storage";
@@ -204,7 +214,7 @@ export async function analyzeReferenceImage({
       return rejected;
     }
     try {
-      parsed = JSON.parse(rawText);
+      parsed = safeParseJSON(rawText);
       break;
     } catch {
       parsed = null;
@@ -257,5 +267,95 @@ export async function getReferenceAnalysis(referenceId: string): Promise<Referen
   const analysis = ref.analysisJson as ReferenceAnalysis;
   await redis.set(cacheKey, JSON.stringify(analysis), "EX", 60 * 60 * 24);
   return analysis;
+}
+
+function guessMediaTypeFromUrl(fileUrl: string): string {
+  const path = fileUrl.split("?")[0]!.toLowerCase();
+  if (path.endsWith(".png")) return "image/png";
+  if (path.endsWith(".webp")) return "image/webp";
+  if (path.endsWith(".gif")) return "image/gif";
+  return "image/jpeg";
+}
+
+/**
+ * Load bytes from our storage URLs (/api/files/...) or from absolute http(s) URLs.
+ */
+export async function loadReferenceImageBuffer(fileUrl: string): Promise<Buffer> {
+  const trimmed = fileUrl.trim();
+  if (parseStoragePathFromPublicUrl(trimmed)) {
+    return readImageFromStorageUrl(trimmed);
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    const res = await fetch(trimmed, { signal: AbortSignal.timeout(25_000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return Buffer.from(await res.arrayBuffer());
+  }
+  throw new Error("Unsupported reference image URL");
+}
+
+/**
+ * Base64 + mime for vision APIs. Large images are downscaled to reduce payload size.
+ */
+export async function loadReferenceImageForVision(
+  fileUrl: string
+): Promise<{ base64: string; mediaType: string } | null> {
+  try {
+    const buf = await loadReferenceImageBuffer(fileUrl);
+    let outBuf = buf;
+    let mediaType = guessMediaTypeFromUrl(fileUrl);
+    try {
+      const meta = await sharp(buf).metadata();
+      const w = meta.width ?? 0;
+      const h = meta.height ?? 0;
+      const maxEdge = 1536;
+      if (w > maxEdge || h > maxEdge) {
+        outBuf = await sharp(buf)
+          .resize(maxEdge, maxEdge, { fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: 88 })
+          .toBuffer();
+        mediaType = "image/jpeg";
+      } else if (meta.format === "png") {
+        mediaType = "image/png";
+      } else if (meta.format === "webp") {
+        mediaType = "image/webp";
+      }
+    } catch {
+      // keep original buffer + guessed type
+    }
+    return { base64: outBuf.toString("base64"), mediaType };
+  } catch (e) {
+    console.warn("[referenceAnalyzer] loadReferenceImageForVision failed", fileUrl, e);
+    return null;
+  }
+}
+
+/**
+ * Vision attachments for generation/revision: user's saved references + optional legacy URL.
+ */
+export async function buildReferenceVisionAttachments(
+  userId: string,
+  referenceIds: string[] | undefined,
+  referenceImageUrl: string | null | undefined
+): Promise<{ base64: string; mediaType: string }[]> {
+  const list: { base64: string; mediaType: string }[] = [];
+  const seen = new Set<string>();
+
+  async function push(url: string) {
+    const u = url.trim();
+    if (!u || seen.has(u)) return;
+    seen.add(u);
+    const loaded = await loadReferenceImageForVision(u);
+    if (loaded) list.push(loaded);
+  }
+
+  for (const id of referenceIds ?? []) {
+    const row = await prisma.referenceImage.findFirst({
+      where: { id, userId },
+      select: { visionUrl: true },
+    });
+    if (row?.visionUrl) await push(row.visionUrl);
+  }
+  if (referenceImageUrl) await push(referenceImageUrl);
+  return list;
 }
 

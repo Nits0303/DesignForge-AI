@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Monitor, Tablet, Smartphone } from "lucide-react";
+import { Monitor, Tablet, Smartphone, Maximize2, Minimize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { sanitizeHtmlForIframe } from "@/lib/ai/htmlSanitizer.client";
@@ -12,6 +12,7 @@ import { PreviewErrorBoundary } from "@/components/workspace/PreviewErrorBoundar
 import { WorkspacePreviewToolbar } from "@/components/workspace/WorkspacePreviewToolbar";
 import { PLATFORM_SPECS } from "@/constants/platforms";
 import type { Platform } from "@/types/design";
+import { DEFAULT_SOCIAL_DIMENSION } from "@/constants/platforms";
 import {
   MOBILE_DEVICE_PRESETS,
   applyOrientation,
@@ -27,7 +28,24 @@ type SlideMode = "single" | "carousel" | "multi-screen";
 
 const SOCIAL_PLATFORMS = new Set(["instagram", "linkedin", "facebook", "twitter"]);
 
-function injectIframeResetAndRoot(html: string, viewportWidthPx?: number, forceShrinkToFit = false): string {
+function injectBaseHrefIntoHead(html: string, baseHref: string): string {
+  const href = String(baseHref ?? "").trim();
+  if (!href) return html;
+  if (/<base\s+href=/i.test(html)) return html;
+  // Insert <base> as the first element in <head>.
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head([^>]*)>/i, `<head$1><base href="${href}">`);
+  }
+  return html;
+}
+
+function injectIframeResetAndRoot(
+  html: string,
+  viewportWidthPx?: number,
+  forceShrinkToFit = false,
+  baseHref?: string,
+  fixedCanvas = false
+): string {
   const responsiveViewportCss =
     viewportWidthPx && viewportWidthPx > 0
       ? `@media (max-width:${viewportWidthPx}px){html,body,#design-root{overflow-x:hidden!important;max-width:100%!important;}}`
@@ -76,8 +94,11 @@ function injectIframeResetAndRoot(html: string, viewportWidthPx?: number, forceS
     : "";
   const resetCss = `<style data-designforge-preview-reset="1">
 html, body { margin: 0; padding: 0; background: transparent; }
-body { overflow: visible; }
-#design-root { margin: 0; padding: 0; display: block; width: 100%; height: auto; min-height: 0; }
+${fixedCanvas ? "html, body { width: 100%; height: 100%; }" : ""}
+body { overflow: ${fixedCanvas ? "hidden" : "visible"}; }
+#design-root { margin: 0; padding: 0; display: block; width: 100%; ${
+    fixedCanvas ? "height: 100%; min-height: 100%; position: relative; overflow: hidden;" : "height: auto; min-height: 0;"
+  } }
 ${responsiveViewportCss}
 </style>`;
   const suppressTailwindCdnWarning = `<script data-designforge-tailwind-warn-filter="1">
@@ -103,6 +124,7 @@ ${responsiveViewportCss}
   // Full document: inject into <head> and wrap body contents once.
   if (/<html[\s>]/i.test(source) && /<body[\s>]/i.test(source)) {
     let out = source;
+    out = injectBaseHrefIntoHead(out, String(baseHref ?? ""));
     if (!/data-designforge-preview-reset="1"/i.test(out)) {
       if (/<head[^>]*>/i.test(out)) {
         out = out.replace(/<head([^>]*)>/i, `<head$1>${resetCss}${suppressTailwindCdnWarning}${shrinkToFitScript}`);
@@ -120,7 +142,8 @@ ${responsiveViewportCss}
   }
 
   // Fragment: create a complete srcdoc shell.
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${resetCss}${suppressTailwindCdnWarning}${shrinkToFitScript}</head><body><div id="design-root">${source}</div></body></html>`;
+  const baseTag = baseHref ? `<base href="${String(baseHref).trim()}">` : "";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${baseTag}${resetCss}${suppressTailwindCdnWarning}${shrinkToFitScript}</head><body><div id="design-root">${source}</div></body></html>`;
 }
 
 export function WorkspacePreviewPanel({
@@ -156,6 +179,7 @@ export function WorkspacePreviewPanel({
     setActiveDeviceId,
     deviceOrientation,
     setDeviceOrientation,
+    selectedDimension,
   } = useWorkspaceStore((s) => s);
 
   const [flashBorder, setFlashBorder] = useState(false);
@@ -166,6 +190,8 @@ export function WorkspacePreviewPanel({
   const [fitScale, setFitScale] = useState(1);
   const [responsiveMode, setResponsiveMode] = useState(false);
   const [autoHeightPx, setAutoHeightPx] = useState<number | null>(null);
+  const [isFocusMode, setIsFocusMode] = useState(false);
+  const [focusScale, setFocusScale] = useState(1);
 
   const mobilePreset = useMemo(() => getMobileDevicePreset(activeDeviceId), [activeDeviceId]);
   const orientedDevice = useMemo(
@@ -231,13 +257,18 @@ export function WorkspacePreviewPanel({
     if (isMobile) {
       return { width: orientedDevice.width, height: orientedDevice.height };
     }
+    // Social canvas size is driven by Dimension Selector (even before generation).
+    if (isSocial) {
+      const d = selectedDimension ?? DEFAULT_SOCIAL_DIMENSION;
+      return { width: d.width, height: d.height };
+    }
     const d = lastGenerationMeta?.dimensions;
     if (!d) return { width: 1080, height: 1080 };
     if (typeof (d as any).height === "string" && (d as any).height === "auto") {
       return { width: (d as any).width ?? 1080, height: 900 };
     }
     return d as any;
-  }, [lastGenerationMeta?.dimensions, isMobile, orientedDevice.height, orientedDevice.width]);
+  }, [isMobile, orientedDevice.height, orientedDevice.width, isSocial, selectedDimension, lastGenerationMeta?.dimensions]);
 
   const iframeWidth = isMobile
     ? orientedDevice.width
@@ -299,6 +330,35 @@ export function WorkspacePreviewPanel({
     return () => window.removeEventListener("message", handler);
   }, [isWebOrDash]);
 
+  useEffect(() => {
+    if (!isFocusMode) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsFocusMode(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isFocusMode]);
+
+  useEffect(() => {
+    if (!isFocusMode) setFocusScale(1);
+  }, [isFocusMode]);
+
+  useEffect(() => {
+    if (!isFocusMode) return;
+    const el = artboardRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setFocusScale((prev) => {
+        const next = prev - e.deltaY * 0.01;
+        return Math.min(4, Math.max(0.25, next));
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel as EventListener);
+  }, [isFocusMode]);
+
   // Send highlight messages into iframe based on chat hover.
   useEffect(() => {
     if (!isWebOrDash) return;
@@ -327,10 +387,12 @@ export function WorkspacePreviewPanel({
 
   // Platform spec info
   const platformSpec = PLATFORM_SPECS[platform];
-  const specDims = platformSpec?.defaultDimensions?.[format] ?? dimensions;
+  const specDims = isSocial ? dimensions : (platformSpec?.defaultDimensions?.[format] ?? dimensions);
   const renderScale = previewMode === "fit" ? fitScale * zoomLevel : zoomLevel;
-  const frameBoxW = Math.max(1, Math.round(fitBoxW * renderScale));
-  const frameBoxH = Math.max(1, Math.round(fitBoxH * renderScale));
+  const effectiveScale = renderScale * (isFocusMode ? focusScale : 1);
+  const frameBoxW = Math.max(1, Math.round(fitBoxW * effectiveScale));
+  const frameBoxH = Math.max(1, Math.round(fitBoxH * effectiveScale));
+  const baseHref = typeof window !== "undefined" ? window.location.origin : "";
   const designDoc = useMemo(
     () =>
       injectIframeResetAndRoot(
@@ -338,8 +400,11 @@ export function WorkspacePreviewPanel({
         isWebOrDash ? iframeWidth : undefined
         ,
         isWebOrDash && breakpoint !== "desktop"
+        ,
+        baseHref,
+        !isWebOrDash
       ),
-    [effectiveHtml, iframeWidth, isWebOrDash, breakpoint]
+    [effectiveHtml, iframeWidth, isWebOrDash, breakpoint, baseHref]
   );
 
   const sectionPlan = (lastGenerationMeta as any)?.sectionPlan as string[] | undefined;
@@ -353,31 +418,43 @@ export function WorkspacePreviewPanel({
   };
 
   return (
-    <div
-      id={`workspace-preview-panel${idSuf}`}
-      className="relative flex h-full flex-col border-r border-[hsl(var(--border))] bg-[hsl(var(--background))]"
-    >
+    <>
+      {isFocusMode ? (
+        <div
+          className="fixed inset-0 z-[70] bg-black/60 backdrop-blur-[1px]"
+          onClick={() => setIsFocusMode(false)}
+        />
+      ) : null}
+      <div
+        id={`workspace-preview-panel${idSuf}`}
+        className={`relative flex h-full flex-col border-r border-[hsl(var(--border))] bg-[hsl(var(--background))] ${
+          isFocusMode
+            ? "fixed inset-3 z-[80] overflow-hidden rounded-[var(--radius-card)] border shadow-2xl"
+            : ""
+        }`}
+      >
       {/* Top toolbar */}
       <div className="z-30 shrink-0">
         <WorkspacePreviewToolbar idSuffix={layout === "mobile" ? "-mobile" : ""} />
       </div>
 
-      {/* Info badge */}
-      <div className="absolute left-3 top-14 z-20 rounded bg-[hsl(var(--surface-elevated))]/80 px-2 py-1 text-[10px] text-[hsl(var(--muted-foreground))]">
-        {(lastGenerationMeta?.platform ?? "Design").toString()} •{" "}
-        {(lastGenerationMeta?.format ?? "preview").toString()} • {iframeWidth}x{iframeHeight}
-        {slides.length > 1 ? (
-          <span className="ml-2">
-            {slideMode === "multi-screen" ? "Screen" : "Slide"} {activeSlide + 1} of {slides.length}
-          </span>
-        ) : null}
-      </div>
+      {/* Info badge (hidden for social to avoid duplicate badges) */}
+      {!isSocial ? (
+        <div className="absolute left-3 top-14 z-20 rounded bg-[hsl(var(--surface-elevated))]/80 px-2 py-1 text-[10px] text-[hsl(var(--muted-foreground))]">
+          {(lastGenerationMeta?.platform ?? "Design").toString()} •{" "}
+          {(lastGenerationMeta?.format ?? "preview").toString()} • {iframeWidth}x{iframeHeight}
+          {slides.length > 1 ? (
+            <span className="ml-2">
+              {slideMode === "multi-screen" ? "Screen" : "Slide"} {activeSlide + 1} of {slides.length}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Social platform specs card */}
       {isSocial && platformSpec && (
-        <div className="absolute right-3 top-3 z-20 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))]/90 p-2 text-[10px] text-[hsl(var(--muted-foreground))] backdrop-blur">
-          <div className="font-semibold text-[hsl(var(--foreground))]">{platformSpec.displayName}</div>
-          <div>{format} · {specDims.width}×{specDims.height}px</div>
+        <div className="absolute right-3 top-14 z-20 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))]/90 px-2 py-1 text-[10px] text-[hsl(var(--muted-foreground))] backdrop-blur">
+          {platform} • {format} • {specDims.width}x{specDims.height}
         </div>
       )}
 
@@ -448,6 +525,7 @@ export function WorkspacePreviewPanel({
       <div
         ref={artboardRef}
         className={`flex-1 bg-[hsl(var(--background))] p-0 ${isWebOrDash ? "overflow-y-auto overflow-x-hidden" : "overflow-hidden"}`}
+        style={isFocusMode ? { touchAction: "none" } : undefined}
       >
         <div
           className={`flex h-full w-full justify-center ${
@@ -508,7 +586,7 @@ export function WorkspacePreviewPanel({
                       <div style={{ width: w, height: displayedIframeHeight, transform: `scale(${scale})`, transformOrigin: "top left" }}>
                         <iframe
                           title={`${label} preview`}
-                          sandbox="allow-scripts"
+                          sandbox="allow-scripts allow-same-origin"
                           srcDoc={sanitizeHtmlForIframe(effectiveHtml || "<div></div>")}
                           className="h-full w-full border-0"
                           style={{ width: w, height: displayedIframeHeight }}
@@ -530,7 +608,7 @@ export function WorkspacePreviewPanel({
                 style={{
                   width: fitBoxW,
                   height: fitBoxH,
-                  transform: `scale(${renderScale})`,
+                  transform: `scale(${effectiveScale})`,
                   transformOrigin: "top left",
                 }}
               >
@@ -546,7 +624,7 @@ export function WorkspacePreviewPanel({
                         <iframe
                           title="Design preview"
                           ref={mainIframeRef}
-                          sandbox="allow-scripts"
+                          sandbox="allow-scripts allow-same-origin"
                           srcDoc={designDoc}
                           className="absolute inset-0 border-0"
                           style={{ width: "100%", height: "100%", display: "block" }}
@@ -565,7 +643,7 @@ export function WorkspacePreviewPanel({
                         <iframe
                           title="Design preview"
                           ref={mainIframeRef}
-                          sandbox="allow-scripts"
+                          sandbox="allow-scripts allow-same-origin"
                           srcDoc={designDoc}
                           className="absolute inset-0 border-0"
                           style={{ width: "100%", height: "100%", display: "block" }}
@@ -584,7 +662,7 @@ export function WorkspacePreviewPanel({
                         <iframe
                           title="Design preview"
                           ref={mainIframeRef}
-                          sandbox="allow-scripts"
+                          sandbox="allow-scripts allow-same-origin"
                           srcDoc={designDoc}
                           className="absolute inset-0 border-0"
                           style={{ width: "100%", height: "100%", display: "block" }}
@@ -609,7 +687,7 @@ export function WorkspacePreviewPanel({
                     <iframe
                       title="Design preview"
                       ref={mainIframeRef}
-                      sandbox="allow-scripts"
+                      sandbox="allow-scripts allow-same-origin"
                       srcDoc={designDoc}
                       className="border-0"
                       style={{
@@ -628,6 +706,16 @@ export function WorkspacePreviewPanel({
             </div>
           )}
         </div>
+        {isLoading ? (
+          <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+            <div className="flex items-center gap-3 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))]/92 px-4 py-2 shadow-md backdrop-blur">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-[hsl(var(--muted-foreground))]/30 border-t-[hsl(var(--accent))]" />
+              <span className="text-sm text-[hsl(var(--foreground))]">
+                {statusMessage ?? "Generating design..."}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {/* Carousel dot nav + social thumbnail strip */}
@@ -646,7 +734,7 @@ export function WorkspacePreviewPanel({
                 <div style={{ width: iframeWidth, height: displayedIframeHeight, transform: `scale(${60 / iframeWidth})`, transformOrigin: "top left", pointerEvents: "none" }}>
                   <iframe
                     title={`Screen ${idx + 1} thumb`}
-                    sandbox=""
+                    sandbox="allow-scripts allow-same-origin"
                     srcDoc={sanitizeHtmlForIframe(slideHtml)}
                     className="border-0"
                     style={{ width: iframeWidth, height: displayedIframeHeight }}
@@ -710,7 +798,7 @@ export function WorkspacePreviewPanel({
                       <div style={{ width: iframeWidth, height: displayedIframeHeight, transform: `scale(${sc})`, transformOrigin: "top left", pointerEvents: "none" }}>
                         <iframe
                           title={`Slide ${idx + 1} thumb`}
-                          sandbox=""
+                          sandbox="allow-scripts allow-same-origin"
                           srcDoc={sanitizeHtmlForIframe(slideHtml)}
                           className="border-0"
                           style={{ width: iframeWidth, height: displayedIframeHeight }}
@@ -729,6 +817,15 @@ export function WorkspacePreviewPanel({
       <div className="absolute bottom-3 right-3 z-10 flex items-center gap-2 rounded border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))] p-2">
         <Button
           size="sm"
+          variant="secondary"
+          onClick={() => setIsFocusMode((v) => !v)}
+          title={isFocusMode ? "Exit focus preview" : "Expand preview"}
+          className="gap-1"
+        >
+          {isFocusMode ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+        </Button>
+        <Button
+          size="sm"
           variant={previewMode === "fit" ? "default" : "secondary"}
           onClick={() => {
             setPreviewMode("fit");
@@ -744,13 +841,24 @@ export function WorkspacePreviewPanel({
           onClick={() => {
             setPreviewMode("actual");
             setZoomLevel(1);
+            setFocusScale(1);
             resetViewportTop();
           }}
         >
           100%
         </Button>
+        {isFocusMode ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => setFocusScale(1)}
+            title="Reset focus zoom"
+          >
+            Reset
+          </Button>
+        ) : null}
         <span className="px-1 text-xs text-[hsl(var(--muted-foreground))]">
-          {Math.round(zoomLevel * 100)}%
+          {Math.round((isFocusMode ? focusScale * zoomLevel : zoomLevel) * 100)}%
         </span>
         <Button size="sm" variant="secondary" onClick={() => setZoomLevel(zoomLevel - 0.1)}>-</Button>
         <Button size="sm" variant="secondary" onClick={() => setZoomLevel(zoomLevel + 0.1)}>+</Button>
@@ -774,6 +882,7 @@ export function WorkspacePreviewPanel({
         </div>
       ) : null}
 
-    </div>
+      </div>
+    </>
   );
 }

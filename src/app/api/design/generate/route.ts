@@ -1,24 +1,37 @@
 import { z } from "zod";
+import crypto from "crypto";
 import { getRequiredSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db/prisma";
 import { checkRateLimit } from "@/lib/redis/rateLimiter";
 import { APP_LIMITS } from "@/constants/limits";
 import { streamGenerateDesign } from "@/lib/ai/generationOrchestrator";
 import { isGeminiPrimaryLlm } from "@/lib/ai/geminiClient";
+import { logApiCall, payloadHash } from "@/lib/server/apiCallLogger";
+import { startTraceRun } from "@/lib/server/langsmith";
+import { SOCIAL_DIMENSIONS } from "@/constants/platforms";
 
 export const runtime = "nodejs";
 const STALE_GENERATING_MINUTES = 2;
 const IS_DEV = process.env.NODE_ENV !== "production";
 
+const referenceUrlSchema = z
+  .string()
+  .trim()
+  .refine((v) => v.length === 0 || /^https?:\/\//i.test(v) || v.startsWith("/"), {
+    message: "referenceImageUrl must be an absolute URL or app-relative path",
+  });
+
 const bodySchema = z.object({
   prompt: z.string().min(4),
-  brandId: z.string().cuid(),
-  projectId: z.string().cuid().optional(),
-  referenceImageUrl: z.string().url().optional(),
-  referenceIds: z.array(z.string().cuid()).max(3).optional(),
-  referenceRoles: z.record(z.string(), z.enum(["layout", "style", "color"])).optional(),
+  brandId: z.string().min(1),
+  projectId: z.string().optional(),
+  referenceImageUrl: referenceUrlSchema.optional().nullable(),
+  // Be tolerant here; ids may come from different providers/environments.
+  referenceIds: z.array(z.string().min(1)).max(3).optional().nullable(),
+  referenceRoles: z.record(z.string(), z.enum(["layout", "style", "color"]).catch("style")).optional().nullable(),
   strategy: z.enum(["fast", "quality"]).optional(),
   sectionPlanOverride: z.array(z.string()).optional(),
+  selectedDimensionId: z.enum(["square", "portrait", "landscape"]).optional(),
 });
 
 type SseEvent =
@@ -41,6 +54,8 @@ function encodeSse(event: SseEvent): string {
 }
 
 export async function POST(req: Request) {
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
   const session = await getRequiredSession().catch((err: any) => {
     if (err?.code === "UNAUTHORIZED" || err?.status === 401) {
       throw new Response(encodeSse({ event: "error", data: { code: "UNAUTHORIZED", message: "Authentication required", retryable: false } }), {
@@ -54,12 +69,40 @@ export async function POST(req: Request) {
   const userId = session.user.id;
 
   const json = await req.json();
+  const bodyHash = payloadHash(json);
+  await logApiCall({
+    requestId,
+    route: "/api/design/generate",
+    phase: "received",
+    userId,
+    payloadHash: bodyHash,
+    meta: {
+      hasReferenceImageUrl: Boolean((json as any)?.referenceImageUrl),
+      referenceIdsCount: Array.isArray((json as any)?.referenceIds) ? (json as any).referenceIds.length : 0,
+      strategy: (json as any)?.strategy ?? null,
+    },
+  });
   const parsed = bodySchema.safeParse(json);
   if (!parsed.success) {
+    console.warn("[design/generate] validation failed", parsed.error.flatten());
+    await logApiCall({
+      requestId,
+      route: "/api/design/generate",
+      phase: "failed",
+      userId,
+      payloadHash: bodyHash,
+      statusCode: 400,
+      durationMs: Date.now() - startedAt,
+      message: parsed.error.issues?.[0]?.message ?? "Invalid input",
+    });
     return new Response(
       encodeSse({
         event: "error",
-        data: { code: "VALIDATION_ERROR", message: "Invalid input", retryable: false },
+        data: {
+          code: "VALIDATION_ERROR",
+          message: parsed.error.issues?.[0]?.message ?? "Invalid input",
+          retryable: false,
+        },
       }),
       {
         status: 400,
@@ -67,8 +110,29 @@ export async function POST(req: Request) {
       }
     );
   }
+  await logApiCall({
+    requestId,
+    route: "/api/design/generate",
+    phase: "validated",
+    userId,
+    payloadHash: bodyHash,
+    durationMs: Date.now() - startedAt,
+  });
 
-  const { prompt, brandId, projectId, referenceImageUrl, referenceIds, referenceRoles, strategy, sectionPlanOverride } = parsed.data;
+  const {
+    prompt,
+    brandId,
+    projectId,
+    referenceImageUrl,
+    referenceIds,
+    referenceRoles,
+    strategy,
+    sectionPlanOverride,
+    selectedDimensionId,
+  } = parsed.data;
+
+  const resolvedSelectedDimension =
+    SOCIAL_DIMENSIONS.find((d) => d.id === (selectedDimensionId ?? "landscape")) ?? SOCIAL_DIMENSIONS[2]!;
 
   const brand = await prisma.brandProfile.findFirst({
     where: { id: brandId, userId },
@@ -165,6 +229,24 @@ export async function POST(req: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      const topRun = await startTraceRun({
+        name: "design_generate_request",
+        runType: "chain",
+        inputs: {
+          route: "/api/design/generate",
+          prompt,
+          brandId,
+          projectId: projectId ?? null,
+          strategy: strategy ?? null,
+          referenceIdsCount: referenceIds?.length ?? 0,
+          hasReferenceImageUrl: Boolean(referenceImageUrl),
+        },
+        metadata: {
+          provider: isGeminiPrimaryLlm() ? "gemini" : "anthropic",
+        },
+        tags: ["design-generate", "api"],
+        trace: { requestId, userId },
+      });
       try {
         const enqueue = (event: SseEvent) => controller.enqueue(encodeSse(event));
 
@@ -174,11 +256,18 @@ export async function POST(req: Request) {
             brandId,
             projectId,
             prompt,
-            referenceImageUrl,
-            referenceIds,
-            referenceRoles,
+            referenceImageUrl: referenceImageUrl || undefined,
+            referenceIds: referenceIds ?? undefined,
+            referenceRoles: referenceRoles ?? undefined,
             strategy,
             sectionPlanOverride,
+            selectedDimension: resolvedSelectedDimension,
+            trace: {
+              requestId,
+              userId,
+              stage: "generate",
+            },
+            parentRunId: topRun?.id,
           },
           {
             onStatus: async (payload) => {
@@ -228,6 +317,28 @@ export async function POST(req: Request) {
             generationTimeMs: result.generationTimeMs,
           },
         });
+        await logApiCall({
+          requestId,
+          route: "/api/design/generate",
+          phase: "completed",
+          userId,
+          payloadHash: bodyHash,
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          meta: {
+            designId: result.designId,
+            versionNumber: result.versionNumber,
+            totalTokens: result.totalTokens,
+          },
+        });
+        await topRun?.finish({
+          outputs: {
+            designId: result.designId,
+            versionNumber: result.versionNumber,
+            totalTokens: result.totalTokens,
+            costUsd: result.costUsd,
+          },
+        });
 
         controller.close();
       } catch (err: any) {
@@ -243,6 +354,21 @@ export async function POST(req: Request) {
             },
           })
         );
+        await logApiCall({
+          requestId,
+          route: "/api/design/generate",
+          phase: "failed",
+          userId,
+          payloadHash: bodyHash,
+          statusCode: 200,
+          durationMs: Date.now() - startedAt,
+          message,
+          meta: { code },
+        });
+        await topRun?.finish({
+          error: message,
+          metadata: { code },
+        });
         controller.close();
       }
     },

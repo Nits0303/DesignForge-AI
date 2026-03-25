@@ -79,6 +79,7 @@ export async function POST(req: Request) {
         format: it.format,
         notes: it.notes ?? null,
         referenceImageUrl: it.referenceImageUrl ?? null,
+        dimensionId: (it as any).dimensionId ?? null,
         status: "pending",
         errorMessage: null,
         revisionPrompt: null,

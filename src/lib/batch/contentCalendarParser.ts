@@ -2,6 +2,7 @@ import { PLATFORM_SPECS } from "@/constants/platforms";
 import { AI_PRICING } from "@/constants/models";
 import { PROMPTS } from "@/lib/ai/prompts";
 import type { Platform } from "@/types/design";
+import type { SocialDimensionId } from "@/constants/platforms";
 
 export type BatchItemInput = {
   topic: string;
@@ -10,6 +11,8 @@ export type BatchItemInput = {
   format: string;
   notes?: string;
   referenceImageUrl?: string;
+  /** Optional social canvas preset for this item: square | portrait | landscape */
+  dimensionId?: SocialDimensionId;
 };
 
 export type BatchCalendarValidationError = {
@@ -46,6 +49,7 @@ type ContentCalendarJson = {
     format?: string;
     notes?: string;
     referenceImageUrl?: string;
+    dimensionId?: SocialDimensionId;
   }>;
 };
 
@@ -250,6 +254,11 @@ function buildItemsFromRow(row: Record<string, string>, rowNum: number): { item?
 
   const notes = row.notes != null ? String(row.notes).slice(0, 500) : undefined;
   const referenceImageUrl = row.reference_url ?? row.reference_image ?? row.referenceImageUrl ?? undefined;
+  const dimensionRaw = normalizeSpaces(row.dimension ?? row.dimensionId ?? row.canvas ?? "");
+  const dimensionId =
+    dimensionRaw && ["square", "portrait", "landscape"].includes(dimensionRaw.toLowerCase())
+      ? (dimensionRaw.toLowerCase() as SocialDimensionId)
+      : undefined;
 
   return {
     item: {
@@ -259,6 +268,7 @@ function buildItemsFromRow(row: Record<string, string>, rowNum: number): { item?
       format,
       notes: notes && notes.trim() ? notes : undefined,
       referenceImageUrl: referenceImageUrl ? String(referenceImageUrl) : undefined,
+      dimensionId,
     },
   };
 }
@@ -298,6 +308,9 @@ export function parseContentCalendarFromCsv(csv: string): BatchCalendarParseResu
       platform: getCell(cols, "platform"),
       format: getCell(cols, "format"),
       notes: getCell(cols, "notes"),
+      dimension: getCell(cols, "dimension"),
+      dimensionId: getCell(cols, "dimensionId"),
+      canvas: getCell(cols, "canvas"),
       reference_url: getCell(cols, "reference_url"),
       reference_image: getCell(cols, "reference_image"),
       referenceImageUrl: getCell(cols, "referenceImageUrl"),
@@ -384,6 +397,10 @@ export function parseContentCalendarFromJson(jsonText: string): BatchCalendarPar
       format,
       notes: it.notes ? String(it.notes).slice(0, 500) : undefined,
       referenceImageUrl: it.referenceImageUrl ? String(it.referenceImageUrl) : undefined,
+      dimensionId:
+        it.dimensionId && ["square", "portrait", "landscape"].includes(String(it.dimensionId).toLowerCase())
+          ? (String(it.dimensionId).toLowerCase() as any)
+          : undefined,
     });
   }
 

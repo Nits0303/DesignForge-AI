@@ -10,6 +10,16 @@ import {
   padScreenPlan,
 } from "@/lib/ai/mobileFlowUtils";
 
+function safeParseJSON(raw: string) {
+  const cleaned = String(raw ?? "")
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned);
+}
+
 function computeHaikuCostUsd(usage: any): number {
   const p = getPricingForModel(AI_MODELS.ROUTER_HAIKU);
   const inp = usage?.input_tokens ?? 0;
@@ -68,7 +78,7 @@ The array must have exactly ${args.targetCount} screens. screenIndex must be 0..
   const usage = (res as any).usage;
   const text = res.content[0]?.type === "text" ? res.content[0].text : "";
   try {
-    const parsed = JSON.parse(text) as { screenPlan?: MobileScreenDescriptor[] };
+    const parsed = safeParseJSON(text) as { screenPlan?: MobileScreenDescriptor[] };
     if (Array.isArray(parsed.screenPlan) && parsed.screenPlan.length) {
       return {
         plan: padScreenPlan(parsed.screenPlan as MobileScreenDescriptor[], args.targetCount, String(args.intent.format)),

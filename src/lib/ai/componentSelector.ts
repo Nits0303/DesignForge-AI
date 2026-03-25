@@ -6,6 +6,37 @@ import { SECTION_CATEGORIES } from "@/constants/sectionCategories";
 import type { Template } from "@prisma/client";
 
 const CACHE_SECONDS = 60 * 10;
+const STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "your", "you", "are", "into", "using", "use",
+  "create", "make", "design", "post", "page", "section", "template", "please", "need", "want",
+]);
+
+function tokenize(text: string): string[] {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+}
+
+function buildIntentTags(intent: ParsedIntent): string[] {
+  const tags = new Set<string>();
+  for (const t of intent.suggestedTemplateTags ?? []) {
+    const k = String(t).toLowerCase().trim();
+    if (k) tags.add(k);
+  }
+  for (const s of intent.styleContext ?? []) {
+    for (const t of tokenize(String(s))) tags.add(t);
+  }
+  for (const c of intent.contentRequirements ?? []) {
+    for (const t of tokenize(String(c))) tags.add(t);
+  }
+  // Always include basic routing hints.
+  tags.add(String(intent.platform).toLowerCase());
+  tags.add(String(intent.format).toLowerCase());
+  return Array.from(tags).slice(0, 40);
+}
 
 function contributorKey(t: Template): string {
   return t.contributorUserId ?? "__system__";
@@ -98,7 +129,7 @@ export async function selectTemplatesForIntent(
     take: 80,
   });
 
-  const tags = (intent.suggestedTemplateTags ?? []).map((t) => t.toLowerCase());
+  const tags = buildIntentTags(intent);
 
   const scoredTemplates = templates
     .map((t) => {

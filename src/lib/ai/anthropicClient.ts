@@ -3,6 +3,7 @@ import type { Messages } from "@anthropic-ai/sdk/resources";
 import { AI_MODELS, AI_PRICING, getPricingForModel } from "@/constants/models";
 import { logAIUsage } from "@/lib/ai/usageLogger";
 import { callGeminiWithRetry, isGeminiPrimaryLlm } from "@/lib/ai/geminiClient";
+import type { TraceContext } from "@/lib/server/langsmith";
 
 const globalForAnthropic = globalThis as unknown as {
   anthropic?: Anthropic;
@@ -43,8 +44,9 @@ function anthropicSystemToOptionalString(params: MessageParams): string | undefi
 
 export async function callAnthropicWithRetry(
   params: MessageParams,
-  opts: { userId: string; designId?: string | null }
+  opts: { userId: string; designId?: string | null; trace?: TraceContext; parentRunId?: string }
 ): Promise<Messages.Message> {
+  // Gemini is the only active provider for this test phase.
   if (isGeminiPrimaryLlm()) {
     return callGeminiWithRetry(
       {

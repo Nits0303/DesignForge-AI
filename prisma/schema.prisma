@@ -299,6 +299,8 @@ model Design {
   platform       String
   format         String
   dimensions     Json?
+  /** Social-media-only canvas preset used at generation time: "square" | "portrait" | "landscape". */
+  selectedDimensionId String?  @db.VarChar(20)
   currentVersion Int           @default(1)
   status         DesignStatus  @default(generating)
   tags           String[]
@@ -357,6 +359,10 @@ model DesignVersion {
   id               String   @id @default(cuid())
   designId         String
   versionNumber    Int
+  /** Optional user-defined label shown in version history. */
+  label            String?
+  /** Soft-delete timestamp for version history cleanup + undo. */
+  deletedAt        DateTime?
   htmlContent      String
   /** When true, htmlContent is a JSON-serialised string[] of per-screen HTML documents (mobile flows). */
   isMultiScreen    Boolean  @default(false)
@@ -853,6 +859,8 @@ model BatchItem {
   date                   String
   platform               String
   format                 String
+  /** Optional social canvas preset for this item: square | portrait | landscape */
+  dimensionId            String?           @db.VarChar(20)
   notes                  String?
   referenceImageUrl     String?
   status                 BatchItemStatus @default(pending)

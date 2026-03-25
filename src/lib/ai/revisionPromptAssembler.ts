@@ -19,6 +19,8 @@ type Args = {
     role?: "layout" | "style" | "color";
     analysis: ReferenceAnalysis;
   }[];
+  /** Multimodal vision inputs (same as generation). */
+  referenceImageDataList?: { base64: string; mediaType: string }[];
 };
 
 const CONTEXT_WINDOW_CHARS = 800_000; // approx 200k tokens × 4 chars/token
@@ -42,6 +44,50 @@ function compressBrandXml(fullXml: string): string {
   return `<brand_compressed>\n  <colors>${uniqueColors.join(", ")}</colors>\n  <fonts>${uniqueFonts.join(", ")}</fonts>\n</brand_compressed>`;
 }
 
+function requestsSocialIcons(text: string): boolean {
+  return /\bsocial\s*icons?\b|\bicons?\b.*\b(twitter|x|linkedin|instagram|facebook)\b/i.test(text);
+}
+
+function requestsWebsiteUrl(text: string): boolean {
+  return /\bwebsite\s*url\b|\bwebsite\s*link\b|\badd\s+(?:a\s+)?(?:url|link)\b|\bfooter\b.*\b(url|link)\b/i.test(text);
+}
+
+function requestsLogoAtTop(text: string): boolean {
+  return /\blogo\b.*\b(top|header|first)\b|\b(top|header|first)\b.*\blogo\b/i.test(text);
+}
+
+function extractUrlFromText(text: string): string | null {
+  const m = text.match(/https?:\/\/[^\s)]+|www\.[^\s)]+/i);
+  if (!m) return null;
+  const raw = m[0].trim().replace(/[),.;!?]+$/, "");
+  if (!raw) return null;
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+}
+
+function pickWebsiteFromSocialHandles(raw: unknown): string | null {
+  if (!raw) return null;
+  const candidates: string[] = [];
+  if (typeof raw === "string") {
+    candidates.push(raw);
+  } else if (Array.isArray(raw)) {
+    for (const v of raw) {
+      if (typeof v === "string") candidates.push(v);
+    }
+  } else if (typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v === "string") {
+        if (/website|site|url|link/i.test(k)) candidates.unshift(v);
+        else candidates.push(v);
+      }
+    }
+  }
+  for (const c of candidates) {
+    const extracted = extractUrlFromText(c);
+    if (extracted) return extracted;
+  }
+  return null;
+}
+
 export async function assembleRevisionPrompt({
   userId,
   designId,
@@ -51,6 +97,7 @@ export async function assembleRevisionPrompt({
   slideLabel,
   referenceImageUrl,
   referenceAnalyses,
+  referenceImageDataList,
 }: Args): Promise<{
   system: string;
   messages: Messages.MessageParam[];
@@ -75,6 +122,12 @@ export async function assembleRevisionPrompt({
       : "";
 
   const patternSummary = JSON.stringify({ type: pattern.type, ...(pattern as any) });
+  const wantsSocialIcons = requestsSocialIcons(revisionText);
+  const wantsWebsiteUrl = requestsWebsiteUrl(revisionText);
+  const wantsLogoTop = requestsLogoAtTop(revisionText);
+  const explicitUrl = extractUrlFromText(revisionText);
+  const fallbackBrandUrl = pickWebsiteFromSocialHandles((design.brand as any).socialHandles);
+  const resolvedFooterUrl = explicitUrl ?? fallbackBrandUrl ?? "https://www.yourwebsite.com";
 
   const system = `${REVISION_SYSTEM_PROMPT}\n\n[system_version=${PROMPTS.revision?.version ?? "revision-v1"}]`;
 
@@ -138,17 +191,78 @@ export async function assembleRevisionPrompt({
         `<layout>${ref.analysis.layoutStructure.type}; sections=${ref.analysis.layoutStructure.sections.join(", ")}</layout>`,
         `<color_mood>${ref.analysis.colorPalette.paletteDescription}</color_mood>`,
         `<visual_style>mood=${ref.analysis.visualStyle.mood}; keywords=${ref.analysis.visualStyle.styleKeywords.join(", ")}</visual_style>`,
-        `<inspiration_note>Use as inspiration only. Keep output original and brand-consistent.</inspiration_note>`,
+        `<inspiration_note>If the user asks to match the reference layout/background, replicate it closely; otherwise use as loose inspiration and stay brand-consistent.</inspiration_note>`,
         `</reference_analysis>`
+      );
+    }
+  }
+
+  if (wantsSocialIcons || wantsWebsiteUrl || wantsLogoTop) {
+    parts.push("", "<revision_requirements>");
+    if (wantsLogoTop) {
+      parts.push(
+        "- Move logo/company mark to the top as the first visible element. Nothing should appear above it."
+      );
+    }
+    if (wantsSocialIcons) {
+      parts.push(
+        "- Include a bottom footer row with horizontal social icon links for requested platforms (Twitter/X, LinkedIn, Instagram, Facebook)."
+      );
+    }
+    if (wantsWebsiteUrl) {
+      parts.push(
+        `- Include a styled footer website link using <a href="${resolvedFooterUrl}">${resolvedFooterUrl}</a>.`
+      );
+    }
+    parts.push("</revision_requirements>");
+  }
+
+  if (wantsSocialIcons) {
+    const socialFooterTemplate = await prisma.template.findFirst({
+      where: {
+        isActive: true,
+        submissionStatus: "approved",
+        category: "footer",
+        tags: { has: "social-icons" },
+        OR: [{ platform: design.platform }, { platform: "all" }],
+      },
+      orderBy: [{ usageCount: "desc" }, { updatedAt: "desc" }],
+      select: { htmlSnippet: true, name: true, platform: true },
+    });
+    if (socialFooterTemplate?.htmlSnippet) {
+      parts.push(
+        "",
+        `<reference_component type="social_icons_footer" source="${socialFooterTemplate.name}" platform="${socialFooterTemplate.platform}">`,
+        socialFooterTemplate.htmlSnippet,
+        "</reference_component>",
+        "<reference_component_note>Use this as a structural pattern for footer social icons; adapt styling to current design.</reference_component_note>"
       );
     }
   }
 
   const body = parts.join("\n");
 
-  const messages: Messages.MessageParam[] = [
-    { role: "user", content: [{ type: "text", text: body }] },
-  ];
+  const hasVision = Boolean(referenceImageDataList && referenceImageDataList.length > 0);
+  const contentBlocks: Messages.MessageParam["content"] = [{ type: "text", text: body }];
+
+  if (hasVision) {
+    for (const img of referenceImageDataList!) {
+      contentBlocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: img.mediaType,
+          data: img.base64,
+        },
+      } as any);
+    }
+    contentBlocks.push({
+      type: "text",
+      text: "The image(s) above are the user's reference design(s). Honor their layout and style when applying the revision.",
+    } as any);
+  }
+
+  const messages: Messages.MessageParam[] = [{ role: "user", content: contentBlocks as any }];
 
   return { system, messages, pattern };
 }

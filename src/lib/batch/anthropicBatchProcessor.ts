@@ -71,7 +71,7 @@ export async function processAnthropicBatchJob(args: {
       data: {
         status: "failed",
         errorMessage:
-          "Batch jobs require the Anthropic API. With GEMINI_API_KEY only, use single-design generation until ANTHROPIC_API_KEY is configured.",
+          "Batch jobs require the Anthropic API. With Gemini-only MVP mode, use single-design generation until ANTHROPIC_API_KEY is configured.",
         revisionPrompt: null,
       },
     });

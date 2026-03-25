@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { redis } from "@/lib/redis/client";
 import { generateDesign } from "@/lib/ai/generationOrchestrator";
 import { processAnthropicBatchJob } from "@/lib/batch/anthropicBatchProcessor";
+import { DEFAULT_SOCIAL_DIMENSION, SOCIAL_DIMENSIONS } from "@/constants/platforms";
 
 import type { BatchProcessingStrategy, BatchItemStatus } from "@prisma/client";
 
@@ -13,6 +14,11 @@ function buildBatchPrompt(platform: string, format: string, topic: string, notes
   const n = notes ? ` ${notes}` : "";
   // Add a shortcode so smartRouter can infer platform/format reliably.
   return `/${platform} ${format} ${topic}.${n}`.trim();
+}
+
+function isSocialPlatform(platform: string) {
+  const p = String(platform ?? "").toLowerCase();
+  return p === "instagram" || p === "linkedin" || p === "facebook" || p === "twitter";
 }
 
 async function acquireLock(lockKey: string, ttlSeconds: number): Promise<boolean> {
@@ -161,6 +167,10 @@ export async function processBatchJob(batchJobId: string): Promise<void> {
       });
 
       try {
+        const selectedDimension =
+          isSocialPlatform(item.platform) && item.format === "post"
+            ? SOCIAL_DIMENSIONS.find((d) => d.id === (item as any).dimensionId) ?? DEFAULT_SOCIAL_DIMENSION
+            : null;
         const gen = await generateDesign({
           userId: batch.userId,
           brandId,
@@ -169,6 +179,7 @@ export async function processBatchJob(batchJobId: string): Promise<void> {
           referenceImageUrl: item.referenceImageUrl ?? undefined,
           strategy: "quality",
           batchJobId,
+          selectedDimension,
         });
 
         completedItems += 1;

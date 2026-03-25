@@ -53,6 +53,10 @@ export type DesignVersion = {
   designId: string;
   versionNumber: number;
   htmlContent: string;
+  label?: string | null;
+  deletedAt?: string | null;
+  revisionPrompt?: string | null;
+  createdAt?: string;
 };
 
 export type DesignAsset = {

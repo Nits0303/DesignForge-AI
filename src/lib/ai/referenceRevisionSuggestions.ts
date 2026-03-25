@@ -32,14 +32,20 @@ export function referenceRevisionSuggestions(
   }
 ): string[] {
   const out: string[] = [];
+  const colorTemperature = analysis?.colorPalette?.colorTemperature ?? null;
+  const spacingDensity = analysis?.spacing?.density ?? null;
+  const hasGradients = Boolean(analysis?.visualStyle?.hasGradients);
+  const borderRadius = analysis?.visualStyle?.borderRadius ?? null;
+  const sizeScale = analysis?.typography?.sizeScale ?? null;
+  const mood = analysis?.visualStyle?.mood ?? null;
 
   const brandHex = normalizeHex(opts?.brandPrimaryColor ?? null);
   const brandTemp = brandHex ? colorTemperatureFromHex(brandHex) : null;
 
-  if (analysis.colorPalette.colorTemperature === "warm" && brandTemp === "cool") {
+  if (colorTemperature === "warm" && brandTemp === "cool") {
     out.push("Warm up the color palette with amber and orange tones");
   }
-  if (analysis.spacing.density === "spacious" && (opts?.generatedDensity ?? "dense") === "dense") {
+  if (spacingDensity === "spacious" && (opts?.generatedDensity ?? "dense") === "dense") {
     out.push("Add more whitespace between sections");
   }
   const html = opts?.currentHtml ?? "";
@@ -53,20 +59,20 @@ export function referenceRevisionSuggestions(
   const denseCurrentByHtml = /grid-cols-(4|5|6)|<table|data-table|kpi/i.test(html);
   const inferredDensity = denseCurrentByHtml ? "dense" : opts?.generatedDensity ?? "moderate";
 
-  if (analysis.visualStyle.hasGradients && !hasGradientInCurrent) {
+  if (hasGradients && !hasGradientInCurrent) {
     out.push("Add a subtle gradient to the hero background");
   }
-  if (analysis.visualStyle.borderRadius === "pill" && !hasPillRadiusInCurrent) {
+  if (borderRadius === "pill" && !hasPillRadiusInCurrent) {
     out.push("Round the button and card corners to pill style");
   }
-  if (analysis.typography.sizeScale === "large" && !hasLargeHeadingCurrent) {
+  if (sizeScale === "large" && !hasLargeHeadingCurrent) {
     out.push("Scale up the headline text for more impact");
   }
-  if (analysis.spacing.density === "spacious" && inferredDensity === "dense") {
+  if (spacingDensity === "spacious" && inferredDensity === "dense") {
     out.push("Add more whitespace between sections");
   }
 
-  if (intent?.platform === "dashboard" && analysis.visualStyle.mood === "technical") {
+  if (intent?.platform === "dashboard" && mood === "technical") {
     out.push("Increase data hierarchy contrast for a more technical dashboard feel");
   }
 

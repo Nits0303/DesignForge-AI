@@ -9,24 +9,42 @@ import sharp from "sharp";
 
 export const runtime = "nodejs";
 
-const ALLOWED = ["image/png", "image/jpeg", "image/webp"];
+const ALLOWED = [
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+  "image/avif",
+  "image/heic",
+  "image/heif",
+];
 const MAX_BYTES = 10 * 1024 * 1024;
 
 export async function POST(req: NextRequest) {
+  const invalid = (message: string, extra?: Record<string, unknown>) => {
+    console.warn("[upload/image] validation failed", { message, ...(extra ?? {}) });
+    return fail("VALIDATION_ERROR", message, 400);
+  };
   try {
     const session = await getRequiredSession();
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
     if (!file || typeof file === "string") {
-      return fail("VALIDATION_ERROR", "File is required", 400);
+      return invalid("File is required");
     }
 
-    const mimeType = mime.lookup(file.name) || file.type;
-    if (!mimeType || !ALLOWED.includes(mimeType)) {
-      return fail("VALIDATION_ERROR", "Invalid file type. Allowed: png, jpeg, webp", 400);
+    const mimeType = (mime.lookup(file.name) || file.type || "").toString().toLowerCase();
+    const isImageByMime = mimeType.startsWith("image/");
+    const ext = (mime.extension(mimeType) || "").toLowerCase();
+    const isKnownImageExt = ["png", "jpg", "jpeg", "webp", "avif", "heic", "heif"].includes(ext);
+    if (!isImageByMime && !isKnownImageExt) {
+      return invalid(
+        "Invalid file type. Allowed image formats: png, jpg, jpeg, webp, avif, heic, heif.",
+        { filename: file.name, mimeType, ext, fileType: file.type }
+      );
     }
     if (file.size > MAX_BYTES) {
-      return fail("VALIDATION_ERROR", "File too large. Max 10MB.", 400);
+      return invalid("File too large. Max 10MB.", { filename: file.name, size: file.size });
     }
 
     const buf = Buffer.from(await file.arrayBuffer());
@@ -34,20 +52,45 @@ export async function POST(req: NextRequest) {
     try {
       meta = await sharp(buf).metadata();
     } catch {
-      return fail(
-        "VALIDATION_ERROR",
+      return invalid(
         "This file appears to be corrupted or is not a valid image.",
-        400
+        { filename: file.name, mimeType, ext, size: file.size }
+      );
+    }
+    const parsedFormat = String(meta.format ?? "").toLowerCase();
+    const isSupportedDecodedFormat = ["jpeg", "png", "webp", "avif", "heif", "heic"].includes(parsedFormat);
+    if (!isSupportedDecodedFormat) {
+      return invalid(
+        "Unsupported or unreadable image format. Please upload PNG, JPG, JPEG, WEBP, AVIF, or HEIC.",
+        { filename: file.name, decodedFormat: parsedFormat, mimeType, ext }
       );
     }
 
     const width = meta.width ?? 0;
     const height = meta.height ?? 0;
-    if (width < 200 || height < 200) {
-      return fail("VALIDATION_ERROR", "Image is too small. Minimum size is 200x200px.", 400);
+    // Reference images can be banner-shaped (e.g. 311x162). Accept smaller
+    // assets as long as they still carry enough visual signal for style extraction.
+    const minShortSide = 120;
+    const minArea = 24_000;
+    const shortSide = Math.min(width, height);
+    if (shortSide < minShortSide || width * height < minArea) {
+      return invalid(
+        `Image is too small. Minimum short side is ${minShortSide}px and minimum area is ${minArea.toLocaleString()}px.`,
+        {
+          filename: file.name,
+          width,
+          height,
+          shortSide,
+          area: width * height,
+        }
+      );
     }
     if (width > 8000 || height > 8000) {
-      return fail("VALIDATION_ERROR", "Image is too large. Maximum size is 8000x8000px.", 400);
+      return invalid("Image is too large. Maximum size is 8000x8000px.", {
+        filename: file.name,
+        width,
+        height,
+      });
     }
 
     const stats = await sharp(buf).stats();
@@ -115,6 +158,7 @@ export async function POST(req: NextRequest) {
     if (err && typeof err === "object" && "code" in err && err.code === "UNAUTHORIZED") {
       return fail("UNAUTHORIZED", "Authentication required", 401);
     }
+    console.error("[upload/image] unexpected error", err);
     return fail("INTERNAL_ERROR", "An unexpected error occurred", 500);
   }
 }

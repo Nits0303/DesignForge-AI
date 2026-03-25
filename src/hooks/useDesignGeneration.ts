@@ -19,6 +19,14 @@ type SsePayload = {
   data: any;
 };
 
+function looksRenderableHtml(input: unknown): boolean {
+  const raw = String(input ?? "").trim();
+  if (!raw) return false;
+  if (raw.startsWith("[")) return true; // mobile multi-screen payload can be JSON string array
+  if (/^```/m.test(raw)) return false;
+  return /<[a-z][^>]*>/i.test(raw);
+}
+
 function parseSseChunk(chunk: string): SsePayload[] {
   const events: SsePayload[] = [];
   const rawEvents = chunk.split("\n\n").filter(Boolean);
@@ -60,6 +68,7 @@ export function useDesignGeneration() {
     setLastPrompt,
     setVersionHistory,
     streamedHtml,
+    selectedDimension,
   } = useWorkspaceStore((s) => s);
 
   const flushPreview = useCallback(() => {
@@ -112,6 +121,7 @@ export function useDesignGeneration() {
             referenceRoles,
             strategy,
             sectionPlanOverride,
+            selectedDimensionId: selectedDimension?.id ?? "landscape",
           }),
           signal: ac.signal,
         });
@@ -167,7 +177,10 @@ export function useDesignGeneration() {
               setGenerationState("processing_images");
             } else if (evt.event === "image_complete") {
               setStatusMessage("Finalising...");
-              setPreviewHtml(evt.data.updatedHtml ?? "");
+              const updated = String(evt.data.updatedHtml ?? "");
+              if (looksRenderableHtml(updated)) {
+                setPreviewHtml(updated);
+              }
             } else if (evt.event === "section_start") {
               const sectionType = evt.data.sectionType ?? "";
               const idx = Number(evt.data.sectionIndex ?? 0) + 1;
@@ -180,13 +193,15 @@ export function useDesignGeneration() {
               setGenerationState("generating");
             } else if (evt.event === "section_complete") {
               const assembled = evt.data.assembledHtml as string | undefined;
-              if (assembled) {
+              if (assembled && looksRenderableHtml(assembled)) {
                 setPreviewHtml(assembled);
               } else {
                 // Fallback: append by string concatenation
                 const sectionHtml = evt.data.sectionHtml ?? "";
-                const prev = useWorkspaceStore.getState().previewHtml ?? "";
-                setPreviewHtml(prev + sectionHtml);
+                if (looksRenderableHtml(sectionHtml)) {
+                  const prev = useWorkspaceStore.getState().previewHtml ?? "";
+                  setPreviewHtml(prev + sectionHtml);
+                }
               }
             } else if (evt.event === "screen_start") {
               const idx = Number(evt.data.screenIndex ?? 0) + 1;
@@ -198,7 +213,7 @@ export function useDesignGeneration() {
               setGenerationState("generating");
             } else if (evt.event === "screen_complete") {
               const html = String(evt.data.screenHtml ?? "");
-              if (html) setPreviewHtml(html);
+              if (looksRenderableHtml(html)) setPreviewHtml(html);
             } else if (evt.event === "complete") {
               sawComplete = true;
               completedDesignId = evt.data.designId ?? null;
@@ -219,7 +234,9 @@ export function useDesignGeneration() {
                     setPreviewHtml(raw);
                   }
                 } else {
-                  setPreviewHtml(raw);
+                  if (looksRenderableHtml(raw)) {
+                    setPreviewHtml(raw);
+                  }
                 }
               }
               setGenerationState("complete");

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { CheckCircle2, ChevronDown, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TemplateBrowser } from "@/components/workspace/TemplateBrowser";
+import { DimensionSelector } from "@/components/workspace/DimensionSelector";
 import { useWorkspaceStore } from "@/store/useWorkspaceStore";
 import { useDesignGeneration } from "@/hooks/useDesignGeneration";
 import { ShortcodeAutocomplete } from "@/components/workspace/ShortcodeAutocomplete";
@@ -28,6 +29,12 @@ const SHORTCODES = [
   "/mobile",
   "/dashboard",
 ];
+
+function detectPlatformHint(p: string): "instagram" | "linkedin" | "facebook" | "twitter" | "website" | "mobile" | "dashboard" | null {
+  const m = String(p ?? "").trim().match(/^\/(instagram|linkedin|facebook|twitter|website|mobile|dashboard)\b/i);
+  if (!m) return null;
+  return m[1]!.toLowerCase() as any;
+}
 
 export function WorkspacePromptPanel({
   prompt,
@@ -144,6 +151,9 @@ export function WorkspacePromptPanel({
   const currentSectionPlan = Array.isArray(lastMeta?.sectionPlan) ? (lastMeta?.sectionPlan as string[]) : null;
   const isWebOrDash = lastPlatform === "website" || lastPlatform === "dashboard";
   const showSectionPlanEditor = isWebOrDash && currentSectionPlan && currentSectionPlan.length >= 2;
+  const platformHint = useMemo(() => detectPlatformHint(prompt), [prompt]);
+  const showDimensionSelector =
+    !platformHint || ["instagram", "linkedin", "facebook", "twitter"].includes(platformHint);
 
   const availableSectionPool = useMemo(() => {
     if (!isWebOrDash) return [];
@@ -317,13 +327,27 @@ export function WorkspacePromptPanel({
     };
     upsertActiveReference(ref);
     setReferenceImageUrl(data.visionUrl);
-    void runAnalysis(data.referenceId);
+    await runAnalysis(data.referenceId);
+  }
+
+  async function ensureAppliedReferencesAnalyzed() {
+    const pending = useWorkspaceStore
+      .getState()
+      .activeReferences.filter((r) => r.applying && (!r.analysis || r.analysisLoading))
+      .map((r) => r.referenceId);
+    if (!pending.length) return;
+    setIsAnalyzingReference(true);
+    try {
+      await Promise.all(pending.map((id) => runAnalysis(id, true)));
+    } finally {
+      setIsAnalyzingReference(false);
+    }
   }
 
   return (
     <div
       id={`workspace-prompt-panel${idSuf}`}
-      className="relative border-r border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-4 overflow-y-auto"
+      className="relative h-full overflow-y-auto border-r border-[hsl(var(--border))] bg-[hsl(var(--surface))] p-4"
     >
       <div className="space-y-4">
         <div>
@@ -375,7 +399,8 @@ export function WorkspacePromptPanel({
           id={`generate-btn${idSuf}`}
           className="w-full"
           disabled={isGenerating || !prompt.trim() || !activeBrandProfileId}
-          onClick={() =>
+          onClick={async () => {
+            await ensureAppliedReferencesAnalyzed();
             startGeneration({
               prompt,
               brandId: activeBrandProfileId || "",
@@ -384,8 +409,8 @@ export function WorkspacePromptPanel({
               referenceIds: activeReferences.filter((r) => r.applying).map((r) => r.referenceId),
               referenceRoles: roleMap,
               strategy: isWebOrDash ? (fastStrategy ? "fast" : "quality") : "quality",
-            })
-          }
+            });
+          }}
         >
           {isGenerating ? "Generating..." : "Generate"}
         </Button>
@@ -479,6 +504,15 @@ export function WorkspacePromptPanel({
           </div>
         </div>
 
+        <DimensionSelector
+          visible={showDimensionSelector}
+          platformHint={
+            platformHint && ["twitter", "instagram", "linkedin", "facebook"].includes(platformHint)
+              ? (platformHint as any)
+              : null
+          }
+        />
+
         <div className="rounded-[var(--radius)] border border-[hsl(var(--border))] bg-[hsl(var(--surface-elevated))]">
           <button
             type="button"
@@ -515,6 +549,7 @@ export function WorkspacePromptPanel({
                     className="hidden"
                     accept="image/png,image/jpeg,image/webp"
                     onChange={async (e) => {
+                      const inputEl = e.currentTarget;
                       const file = e.target.files?.[0];
                       if (!file) return;
                       setIsUploadingReference(true);
@@ -525,9 +560,27 @@ export function WorkspacePromptPanel({
                         const json = await res.json();
                         if (res.ok && json.success) {
                           await attachReferenceFromUploadResponse(json.data);
+                          enqueueToast({
+                            title: "Reference uploaded",
+                            description: "Your reference image is attached for the next generation.",
+                            type: "success",
+                          });
+                        } else {
+                          enqueueToast({
+                            title: "Upload failed",
+                            description: json?.error?.message ?? "Could not upload this image. Try another file.",
+                            type: "error",
+                          });
                         }
+                      } catch {
+                        enqueueToast({
+                          title: "Upload failed",
+                          description: "Network or server error while uploading reference image.",
+                          type: "error",
+                        });
                       } finally {
                         setIsUploadingReference(false);
+                        if (inputEl) inputEl.value = "";
                       }
                     }}
                   />
@@ -692,7 +745,14 @@ export function WorkspacePromptPanel({
                         <div>Mood: {ref.analysis?.visualStyle?.mood ?? "—"}</div>
                         {idx === 0 ? (
                           <>
-                            <div>Typography: {ref.analysis ? `${ref.analysis.typography.headingStyle} / ${ref.analysis.typography.bodyStyle}` : "—"}</div>
+                            <div>
+                              Typography:{" "}
+                              {ref.analysis?.typography
+                                ? `${ref.analysis.typography.headingStyle ?? "—"} / ${
+                                    ref.analysis.typography.bodyStyle ?? "—"
+                                  }`
+                                : "—"}
+                            </div>
                             <div>Spacing: {ref.analysis?.spacing?.density ?? "—"}</div>
                           </>
                         ) : null}
@@ -994,8 +1054,9 @@ export function WorkspacePromptPanel({
                   <Button
                     size="sm"
                     className="w-full"
-                    onClick={() => {
+                    onClick={async () => {
                       setEditingPlan(false);
+                      await ensureAppliedReferencesAnalyzed();
                       void startGeneration({
                         prompt,
                         brandId: activeBrandProfileId || "",
